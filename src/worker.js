@@ -80,6 +80,11 @@ async function handleApi(request, env, url) {
       : json({ error: 'Speaker not found' }, 404);
   }
 
+  if (match && request.method === 'DELETE') {
+    const result = await env.DB.prepare('DELETE FROM speakers WHERE id = ?').bind(match[1]).run();
+    return result.meta.changes ? json({ ok: true }) : json({ error: 'Speaker not found' }, 404);
+  }
+
   return json({ error: 'Not found' }, 404);
 }
 

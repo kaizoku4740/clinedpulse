@@ -96,10 +96,19 @@ async function showSpeaker(id) {
     <div class="detail-body"><h3>Contact</h3><p>${escapeHtml(speaker.email)}</p>${speaker.faculty_profile_url ? `<p><a href="${escapeHtml(speaker.faculty_profile_url)}" target="_blank" rel="noreferrer">Open faculty profile ↗</a></p>` : ''}</div>
     <div class="detail-body"><h3>Previous participation</h3><p>${escapeHtml(speaker.participation_history || 'No previous participation recorded.')}</p></div>
     <div class="detail-body"><h3>Internal notes</h3><p>${escapeHtml(speaker.notes || 'No internal notes.')}</p></div>
-    <div class="modal-actions"><button class="button" type="button" id="editSpeaker">Edit profile</button><button class="button primary" type="button" id="closeProfile">Done</button></div>`;
+    <div class="modal-actions"><button class="button danger" type="button" id="deleteSpeaker">Delete speaker</button><button class="button" type="button" id="editSpeaker">Edit profile</button><button class="button primary" type="button" id="closeProfile">Done</button></div>`;
   modal.showModal();
   $('#closeProfile').onclick = () => modal.close();
   $('#editSpeaker').onclick = () => speakerForm(speaker);
+  $('#deleteSpeaker').onclick = async () => {
+    if (!confirm(`Delete ${speaker.name}? This cannot be undone.`)) return;
+    try {
+      await api(`/api/speakers/${speaker.id}`, { method: 'DELETE' });
+      modal.close();
+      toast('Speaker deleted');
+      location.hash.startsWith('#speakers') ? directory() : overview();
+    } catch (error) { toast(error.message); }
+  };
 }
 
 function field(name, label, value = '', required = false, type = 'text', full = false, placeholder = '') {

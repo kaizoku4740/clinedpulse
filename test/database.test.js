@@ -22,3 +22,10 @@ test('stores a complete placeholder speaker profile', () => {
 test('speaker emails are unique regardless of case', () => {
   assert.throws(() => db.prepare('INSERT INTO speakers (name,email) VALUES (?,?)').run('Duplicate', 'TEST@example.com'), /UNIQUE/);
 });
+
+test('speaker records can be deleted', () => {
+  const result = db.prepare('INSERT INTO speakers (name,email) VALUES (?,?)').run('Delete Me', 'delete@example.com');
+  const deletion = db.prepare('DELETE FROM speakers WHERE id=?').run(result.lastInsertRowid);
+  assert.equal(deletion.changes, 1);
+  assert.equal(db.prepare('SELECT * FROM speakers WHERE id=?').get(result.lastInsertRowid), undefined);
+});

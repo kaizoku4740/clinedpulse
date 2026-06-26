@@ -74,6 +74,11 @@ async function api(req, res, url) {
     return result.changes ? json(res, 200, getSpeaker(match[1])) : json(res, 404, { error: 'Speaker not found' });
   }
 
+  if (match && req.method === 'DELETE') {
+    const result = db.prepare('DELETE FROM speakers WHERE id = ?').run(match[1]);
+    return result.changes ? json(res, 200, { ok: true }) : json(res, 404, { error: 'Speaker not found' });
+  }
+
   return json(res, 404, { error: 'Not found' });
 }
 

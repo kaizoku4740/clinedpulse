@@ -9,6 +9,7 @@ The goal is to replace scattered notes and spreadsheets with one searchable sour
 ## Included
 
 - Add and edit speaker profiles
+- Delete speaker profiles when test records or outdated entries should be removed
 - Store name, email, institution, specialty, faculty profile URL, previous participation history, and internal notes
 - Search by name, specialty, or institution
 - Overview counts for speakers, specialties, and institutions

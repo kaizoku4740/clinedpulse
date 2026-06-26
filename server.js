@@ -47,8 +47,8 @@ async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/speakers') {
     const q = `%${url.searchParams.get('q') || ''}%`;
     const rows = db.prepare(`SELECT * FROM speakers
-      WHERE name LIKE ? OR email LIKE ? OR specialty LIKE ? OR institution LIKE ?
-      ORDER BY name`).all(q, q, q, q);
+      WHERE name LIKE ? OR specialty LIKE ? OR institution LIKE ?
+      ORDER BY name`).all(q, q, q);
     return json(res, 200, rows);
   }
 

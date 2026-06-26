@@ -49,8 +49,8 @@ async function handleApi(request, env, url) {
   if (request.method === 'GET' && url.pathname === '/api/speakers') {
     const q = `%${url.searchParams.get('q') || ''}%`;
     const { results } = await env.DB.prepare(`SELECT * FROM speakers
-      WHERE name LIKE ? OR email LIKE ? OR specialty LIKE ? OR institution LIKE ?
-      ORDER BY name`).bind(q, q, q, q).all();
+      WHERE name LIKE ? OR specialty LIKE ? OR institution LIKE ?
+      ORDER BY name`).bind(q, q, q).all();
     return json(results);
   }
 

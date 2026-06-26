@@ -10,7 +10,7 @@ The goal is to replace scattered notes and spreadsheets with one searchable sour
 
 - Add and edit speaker profiles
 - Store name, email, institution, specialty, faculty profile URL, previous participation history, and internal notes
-- Search by name, email, specialty, or institution
+- Search by name, specialty, or institution
 - Overview counts for speakers, specialties, and institutions
 - Fictional placeholder data for safe testing
 

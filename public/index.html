@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#163f3a">
+  <title>ClinEdPulse · Event Operations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#dashboard" aria-label="ClinEdPulse home">
+      <span class="brand-mark">C</span><span>ClinEd<span>Pulse</span></span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#dashboard" data-route="dashboard">⌂ <span>Overview</span></a>
+      <a href="#speakers" data-route="speakers">◎ <span>Speakers</span></a>
+    </nav>
+    <div class="sidebar-note"><small>OPERATIONS PRINCIPLE</small><p>Automate the tracking.<br>Keep relationships human.</p></div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div><p class="eyebrow">EVENT OPERATIONS SYSTEM</p><h1 id="pageTitle">Good morning</h1></div>
+      <div class="top-actions"><span class="today" id="today"></span><button class="button primary" data-action="new-speaker">+ Add speaker</button></div>
+    </header>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <section id="view" class="view" aria-live="polite"></section>
+  </main>
+
+  <dialog id="modal"><form method="dialog" id="modalForm"><button class="close" value="cancel" aria-label="Close">×</button><div id="modalBody"></div></form></dialog>
+
+  <template id="emptyTemplate"><div class="empty"><span>✦</span><h3>Nothing here yet</h3><p></p></div></template>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

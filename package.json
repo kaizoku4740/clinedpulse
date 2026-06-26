@@ -1,0 +1,20 @@
+{
+  "name": "clinedpulse-ceos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ClinEdPulse Phase 1 speaker database",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "cf:dev": "wrangler dev --persist-to .wrangler/state",
+    "cf:deploy": "wrangler deploy",
+    "cf:migrate:local": "wrangler d1 migrations apply clinedpulse-speaker-database --local",
+    "cf:migrate:remote": "wrangler d1 migrations apply clinedpulse-speaker-database --remote",
+    "seed": "node scripts/seed.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

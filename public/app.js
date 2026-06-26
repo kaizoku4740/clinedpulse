@@ -67,24 +67,41 @@ async function overview() {
 async function directory() {
   activate('speakers');
   $('#pageTitle').textContent = 'Speaker directory';
-  const query = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
-  const speakers = await api(`/api/speakers?q=${encodeURIComponent(query)}`);
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const query = params.get('q') || '';
+  const searchBy = params.get('searchBy') || 'all';
+  const speakers = await api(`/api/speakers?q=${encodeURIComponent(query)}&searchBy=${encodeURIComponent(searchBy)}`);
   const rows = speakers.map(speakerRow).join('');
   view.innerHTML = `
     <div class="section-head">
-      <div><h2>All speakers</h2><p>Search by name, specialty, or institution.</p></div>
-      <div class="toolbar"><input class="input search" id="speakerSearch" type="search" value="${escapeHtml(query)}" placeholder="Search speakers"><button class="button primary" id="addSpeaker">+ Add speaker</button></div>
+      <div><h2>All speakers</h2><p>Choose a field, then search by name, specialty, or institution.</p></div>
+      <div class="toolbar">
+        <select id="searchBy" aria-label="Search field">
+          <option value="all" ${searchBy === 'all' ? 'selected' : ''}>All fields</option>
+          <option value="name" ${searchBy === 'name' ? 'selected' : ''}>Name</option>
+          <option value="specialty" ${searchBy === 'specialty' ? 'selected' : ''}>Specialty</option>
+          <option value="institution" ${searchBy === 'institution' ? 'selected' : ''}>Institution</option>
+        </select>
+        <input class="input search" id="speakerSearch" type="search" value="${escapeHtml(query)}" placeholder="Search speakers">
+        <button class="button primary" id="addSpeaker">+ Add speaker</button>
+      </div>
     </div>
     <div class="table-card">${rows ? `<table class="table"><thead><tr><th>SPEAKER</th><th>SPECIALTY</th><th>INSTITUTION</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : empty('Try a different search or add a new test profile.')}</div>`;
 
   let timer;
+  const updateSearch = () => {
+    const q = encodeURIComponent($('#speakerSearch').value);
+    const by = encodeURIComponent($('#searchBy').value);
+    location.hash = `speakers?q=${q}&searchBy=${by}`;
+    directory();
+  };
   $('#speakerSearch').oninput = event => {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      location.hash = `speakers?q=${encodeURIComponent(event.target.value)}`;
-      directory();
+      updateSearch();
     }, 250);
   };
+  $('#searchBy').onchange = updateSearch;
   $('#addSpeaker').onclick = () => speakerForm();
   wireSpeakerRows();
 }

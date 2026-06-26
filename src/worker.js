@@ -48,9 +48,16 @@ async function handleApi(request, env, url) {
 
   if (request.method === 'GET' && url.pathname === '/api/speakers') {
     const q = `%${url.searchParams.get('q') || ''}%`;
-    const { results } = await env.DB.prepare(`SELECT * FROM speakers
-      WHERE name LIKE ? OR specialty LIKE ? OR institution LIKE ?
-      ORDER BY name`).bind(q, q, q).all();
+    const searchBy = url.searchParams.get('searchBy') || 'all';
+    const searchColumns = {
+      name: ['name'],
+      specialty: ['specialty'],
+      institution: ['institution'],
+      all: ['name', 'specialty', 'institution']
+    }[searchBy] || ['name', 'specialty', 'institution'];
+    const where = searchColumns.map(column => `${column} LIKE ?`).join(' OR ');
+    const { results } = await env.DB.prepare(`SELECT * FROM speakers WHERE ${where} ORDER BY name`)
+      .bind(...searchColumns.map(() => q)).all();
     return json(results);
   }
 

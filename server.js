@@ -46,9 +46,15 @@ async function api(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/speakers') {
     const q = `%${url.searchParams.get('q') || ''}%`;
-    const rows = db.prepare(`SELECT * FROM speakers
-      WHERE name LIKE ? OR specialty LIKE ? OR institution LIKE ?
-      ORDER BY name`).all(q, q, q);
+    const searchBy = url.searchParams.get('searchBy') || 'all';
+    const searchColumns = {
+      name: ['name'],
+      specialty: ['specialty'],
+      institution: ['institution'],
+      all: ['name', 'specialty', 'institution']
+    }[searchBy] || ['name', 'specialty', 'institution'];
+    const where = searchColumns.map(column => `${column} LIKE ?`).join(' OR ');
+    const rows = db.prepare(`SELECT * FROM speakers WHERE ${where} ORDER BY name`).all(...searchColumns.map(() => q));
     return json(res, 200, rows);
   }
 

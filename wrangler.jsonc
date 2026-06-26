@@ -11,7 +11,7 @@
     {
       "binding": "DB",
       "database_name": "clinedpulse-speaker-database",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "50a5424e-f5e7-4f9d-8b0b-bbb5b6356f9c",
       "migrations_dir": "migrations"
     }
   ]

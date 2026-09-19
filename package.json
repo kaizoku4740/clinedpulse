@@ -16,5 +16,11 @@
   },
   "engines": {
     "node": ">=22.5"
+  },
+  "dependencies": {
+    "postal-mime": "^2.7.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.135.0"
   }
 }

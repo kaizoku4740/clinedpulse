@@ -3,29 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#163f3a">
+  <meta name="theme-color" content="#6f1219">
   <title>ClinEdPulse · Event Operations</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260720-test-mode">
 </head>
 <body>
   <aside class="sidebar">
     <a class="brand" href="#dashboard" aria-label="ClinEdPulse home">
-      <span class="brand-mark">C</span><span>ClinEd<span>Pulse</span></span>
+      <span class="brand-mark">C</span><span>ClinEd<span>Pulse</span><small id="brandHub">HemeHub</small></span>
     </a>
     <nav aria-label="Main navigation">
       <a href="#dashboard" data-route="dashboard">⌂ <span>Overview</span></a>
       <a href="#speakers" data-route="speakers">◎ <span>Speakers</span></a>
+      <a href="#events" data-route="events">◷ <span>Events</span></a>
+      <a href="#email" data-route="email">✉ <span>Email review</span></a>
     </nav>
-    <div class="sidebar-note"><small>CLINEDPULSE</small><p>Event database</p></div>
+    <div class="sidebar-note"><small id="sidebarHub">HEMEHUB</small><p>Event database</p></div>
   </aside>
 
   <main>
     <header class="topbar">
       <div><p class="eyebrow">EVENT OPERATIONS SYSTEM</p><h1 id="pageTitle">Good morning</h1></div>
-      <div class="top-actions"><span class="today" id="today"></span><button class="button primary" data-action="new-speaker">+ Add speaker</button></div>
+      <div class="top-actions">
+        <button class="mode-toggle" id="testModeToggle" type="button" aria-pressed="false" title="Switch between real and test data">
+          <span class="mode-switch" aria-hidden="true"><i></i></span><span id="testModeLabel">Real data</span>
+        </button>
+        <div class="hub-switcher" role="group" aria-label="Choose ClinEdPulse hub">
+          <button type="button" class="hub-option" data-hub="heme" aria-pressed="true"><span class="hub-dot"></span>HemeHub</button>
+          <button type="button" class="hub-option" data-hub="endo" aria-pressed="false"><span class="hub-dot"></span>EndoExpertHub</button>
+          <button type="button" class="hub-option" data-hub="gastro" aria-pressed="false"><span class="hub-dot"></span>GastroExpertHub</button>
+        </div>
+        <span class="today" id="today"></span>
+      </div>
     </header>
     <div id="toast" role="status" aria-live="polite"></div>
     <section id="view" class="view" aria-live="polite"></section>
@@ -34,6 +46,6 @@
   <dialog id="modal"><form method="dialog" id="modalForm"><button class="close" value="cancel" aria-label="Close">×</button><div id="modalBody"></div></form></dialog>
 
   <template id="emptyTemplate"><div class="empty"><span>✦</span><h3>Nothing here yet</h3><p></p></div></template>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=20260720-test-mode"></script>
 </body>
 </html>

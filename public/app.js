@@ -94,17 +94,43 @@ const readinessWeights = {
   'Consent Form Received': 20
 };
 
-async function api(path, options = {}) {
+async function api(path, options = {}, attempt = 0) {
   const separator = path.includes('?') ? '&' : '?';
   const scopedPath = path.startsWith('/api/')
     ? `${path}${separator}hub=${encodeURIComponent(activeHub)}&mode=${encodeURIComponent(activeDataMode)}`
     : path;
+  const method = String(options.method || 'GET').toUpperCase();
   let body = options.body;
   if (body) {
     try { body = JSON.stringify({ ...JSON.parse(body), hub_key: activeHub }); } catch {}
   }
-  const response = await fetch(scopedPath, { headers: { 'content-type': 'application/json' }, ...options, body });
-  const data = await response.json();
+  let response;
+  try {
+    response = await fetch(scopedPath, {
+      headers: { 'content-type': 'application/json' },
+      ...options,
+      body,
+      cache: method === 'GET' ? 'no-store' : options.cache
+    });
+  } catch (error) {
+    if (method === 'GET' && attempt < 2) {
+      await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      return api(path, options, attempt + 1);
+    }
+    throw new Error('Could not reach ClinEdPulse. Check your connection and try again.');
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(response.ok
+      ? 'ClinEdPulse returned an unreadable response. Please try again.'
+      : `ClinEdPulse request failed (${response.status}).`);
+  }
+  if (!response.ok && method === 'GET' && response.status >= 500 && attempt < 2) {
+    await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+    return api(path, options, attempt + 1);
+  }
   if (!response.ok) throw new Error(data.error || 'Something went wrong');
   return data;
 }
@@ -863,7 +889,7 @@ async function eventsDashboard() {
         <button class="button primary" id="addEvent" type="button">+ Add event</button>
       </div>
     </div>
-    <div class="table-card">${rows ? `<table class="table events-table"><thead><tr><th>EVENT</th><th>SPEAKER</th><th>DATE</th><th>STATUS</th><th>READINESS</th></tr></thead><tbody>${rows}</tbody></table>` : empty('Add an event or clear the filters to see the event dashboard.')}</div>`;
+    <div class="table-card">${rows ? `<table class="table events-table"><thead><tr><th>EVENT</th><th>SPEAKER</th><th>DATE</th><th>STATUS</th><th>READINESS</th></tr></thead><tbody>${rows}</tbody></table>` : empty(activeDataMode === 'test' ? 'No test events match these filters.' : 'Real event data is empty right now. Turn on Test data to view the sample events.', 'No events yet')}</div>`;
 
   const applyFilters = () => {
     const next = new URLSearchParams();
@@ -1330,7 +1356,9 @@ async function router() {
     else if (location.hash.startsWith('#email')) await emailReviews();
     else await overview();
   } catch (error) {
-    view.innerHTML = `<div class="status-page"><h2>We hit a snag</h2><p>${escapeHtml(error.message)}</p></div>`;
+    console.error('Route load failed', error);
+    view.innerHTML = `<div class="status-page"><h2>We hit a snag</h2><p>${escapeHtml(error.message)}</p><button class="button primary" id="retryRoute" type="button">Try again</button></div>`;
+    $('#retryRoute').onclick = () => router();
   }
 }
 

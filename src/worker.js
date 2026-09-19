@@ -913,6 +913,12 @@ export default {
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
       return env.ASSETS.fetch(request);
     } catch (error) {
+      console.error(JSON.stringify({
+        message: 'request failed',
+        method: request.method,
+        path: url.pathname,
+        error: String(error?.message || error)
+      }));
       const status = error.message?.includes('UNIQUE constraint failed') ? 409 : error.status || 500;
       return json({ error: constraintMessage(error) }, status);
     }

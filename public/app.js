@@ -165,11 +165,15 @@ const readinessWeights = {
   'Consent Form Received': 20
 };
 
-async function api(path, options = {}, attempt = 0) {
+function scopedApiPath(path) {
   const separator = path.includes('?') ? '&' : '?';
-  const scopedPath = path.startsWith('/api/')
+  return path.startsWith('/api/')
     ? `${path}${separator}hub=${encodeURIComponent(activeHub)}&mode=${encodeURIComponent(activeDataMode)}`
     : path;
+}
+
+async function api(path, options = {}, attempt = 0) {
+  const scopedPath = scopedApiPath(path);
   const method = String(options.method || 'GET').toUpperCase();
   let body = options.body;
   let retryableEventSave = false;
@@ -211,6 +215,29 @@ async function api(path, options = {}, attempt = 0) {
   }
   if (!response.ok) throw new Error(data.error || 'Something went wrong');
   return data;
+}
+
+const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+async function findCreatedEvent(requestKey, delays) {
+  for (const delay of delays) {
+    if (delay) await pause(delay);
+    try {
+      return await api(`/api/events/request/${encodeURIComponent(requestKey)}`);
+    } catch {}
+  }
+  return null;
+}
+
+async function recoverCreatedEvent(body) {
+  const saved = await findCreatedEvent(body.request_key, [150, 450]);
+  if (saved) return saved;
+
+  let queued = false;
+  try {
+    queued = navigator.sendBeacon(scopedApiPath('/api/events'), JSON.stringify({ ...body, hub_key: activeHub }));
+  } catch {}
+  return queued ? findCreatedEvent(body.request_key, [300, 750, 1500]) : null;
 }
 
 function toast(message) {
@@ -1453,15 +1480,22 @@ async function eventForm(event = {}) {
     const saveButton = $('#saveEvent');
     saveButton.disabled = true;
     saveButton.textContent = 'Saving...';
-    try {
-      await api(event.id ? `/api/events/${event.id}` : '/api/events', {
-        method: event.id ? 'PUT' : 'POST', body: JSON.stringify(body)
-      });
+    const finishSave = () => {
       modal.close();
       if (!event.id) clearSpeakerQueue();
       toast(`Event ${event.id ? 'updated' : 'added'}`);
       location.hash.startsWith('#events') ? eventsDashboard() : overview();
+    };
+    try {
+      await api(event.id ? `/api/events/${event.id}` : '/api/events', {
+        method: event.id ? 'PUT' : 'POST', body: JSON.stringify(body)
+      });
+      finishSave();
     } catch (error) {
+      if (!event.id && error.message.includes('Could not reach') && await recoverCreatedEvent(body)) {
+        finishSave();
+        return;
+      }
       saveButton.disabled = false;
       saveButton.textContent = 'Save event';
       toast(error.message.includes('Could not reach')

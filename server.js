@@ -394,10 +394,9 @@ function eventRequestKey(body) {
   return key;
 }
 
-function eventByRequestKey(hub, requestKey) {
+function eventReceiptByRequestKey(hub, requestKey) {
   if (!requestKey) return null;
-  const existing = db.prepare('SELECT id FROM events WHERE hub_key = ? AND request_key = ?').get(hub, requestKey);
-  return existing ? getEvent(existing.id) : null;
+  return db.prepare('SELECT id,request_key FROM events WHERE hub_key = ? AND request_key = ?').get(hub, requestKey);
 }
 
 const eventSelect = `SELECT events.*, COALESCE((
@@ -832,8 +831,8 @@ async function api(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(req);
     const requestKey = eventRequestKey(body);
-    const existing = eventByRequestKey(hub, requestKey);
-    if (existing) return json(res, 200, withChecklist(existing));
+    const existing = eventReceiptByRequestKey(hub, requestKey);
+    if (existing) return json(res, 200, existing);
     const { values, speakers } = eventInsertFields(body, hub);
     ensureEventIsUnique(values);
     let result;
@@ -842,14 +841,14 @@ async function api(req, res, url) {
         (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key,request_key)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...values, hub, requestKey);
     } catch (error) {
-      const retried = eventByRequestKey(hub, requestKey);
-      if (retried) return json(res, 200, withChecklist(retried));
+      const retried = eventReceiptByRequestKey(hub, requestKey);
+      if (retried) return json(res, 200, retried);
       throw error;
     }
     syncEventSpeakers(result.lastInsertRowid, speakers);
     createEventChecklist(result.lastInsertRowid, checklistDueDates(body));
     applyStatusChecklist(result.lastInsertRowid, values[8]);
-    return json(res, 201, withChecklist(getEvent(result.lastInsertRowid)));
+    return json(res, 201, { id: result.lastInsertRowid, request_key: requestKey });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/events/import') {
@@ -875,6 +874,13 @@ async function api(req, res, url) {
   if (match && req.method === 'DELETE') {
     const result = db.prepare('DELETE FROM speakers WHERE id = ?').run(match[1]);
     return result.changes ? json(res, 200, { ok: true }) : json(res, 404, { error: 'Speaker not found' });
+  }
+
+  const eventRequestMatch = url.pathname.match(/^\/api\/events\/request\/([A-Za-z0-9_-]+)$/);
+  if (eventRequestMatch && req.method === 'GET') {
+    const requestKey = eventRequestKey({ request_key: eventRequestMatch[1] });
+    const receipt = eventReceiptByRequestKey(hub, requestKey);
+    return receipt ? json(res, 200, receipt) : json(res, 404, { error: 'Event not found' });
   }
 
   const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);

@@ -311,10 +311,13 @@ async function resolveEventSpeaker(env, body) {
 async function resolveEventSpeakers(env, body, hub) {
   const requested = Array.isArray(body.speaker_ids) ? body.speaker_ids : body.speaker_id ? [body.speaker_id] : [];
   const ids = [...new Set(requested.map(value => Number(value)).filter(Number.isInteger))];
-  const speakers = [];
-  for (const id of ids) {
-    const speaker = await getSpeaker(env, id);
-    if (speaker && (!hub || speaker.hub_key === hub)) speakers.push(speaker);
+  let speakers = [];
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',');
+    const { results } = await env.DB.prepare(`SELECT * FROM speakers WHERE id IN (${placeholders}) AND hub_key = ?`)
+      .bind(...ids, hub).all();
+    const byId = new Map(results.map(speaker => [Number(speaker.id), publicSpeaker(speaker)]));
+    speakers = ids.map(id => byId.get(id)).filter(Boolean);
   }
   if (!speakers.length) {
     const fallback = await resolveEventSpeaker(env, body);
@@ -411,6 +414,28 @@ async function createEventChecklist(env, eventId, dueDates = {}) {
   await env.DB.batch(statements);
 }
 
+async function initializeEventOperations(env, eventId, speakers, dueDates, status) {
+  const statements = [];
+  speakers.forEach((speaker, position) => {
+    statements.push(env.DB.prepare('INSERT INTO event_speakers (event_id,speaker_id,position) VALUES (?,?,?)')
+      .bind(eventId, speaker.id, position));
+  });
+  checklistItems.forEach((item, index) => {
+    statements.push(env.DB.prepare('INSERT OR IGNORE INTO event_checklist_items (event_id,label,position,due_date) VALUES (?,?,?,?)')
+      .bind(eventId, item, index + 1, dueDates[item] || null));
+  });
+  const completedLabels = statusChecklistMap[status] || [];
+  if (completedLabels.length) {
+    const placeholders = completedLabels.map(() => '?').join(',');
+    statements.push(env.DB.prepare(`UPDATE event_checklist_items SET
+      completed=1,
+      completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP),
+      updated_at=CURRENT_TIMESTAMP
+      WHERE event_id=? AND label IN (${placeholders}) AND completed=0`).bind(eventId, ...completedLabels));
+  }
+  await env.DB.batch(statements);
+}
+
 async function updateChecklistDueDates(env, eventId, dueDates = {}) {
   const statements = Object.entries(dueDates)
     .filter(([label]) => checklistItems.includes(label))
@@ -457,11 +482,10 @@ function eventRequestKey(body) {
   return key;
 }
 
-async function eventByRequestKey(env, hub, requestKey) {
+async function eventReceiptByRequestKey(env, hub, requestKey) {
   if (!requestKey) return null;
-  const existing = await env.DB.prepare('SELECT id FROM events WHERE hub_key = ? AND request_key = ?')
+  return env.DB.prepare('SELECT id,request_key FROM events WHERE hub_key = ? AND request_key = ?')
     .bind(hub, requestKey).first();
-  return existing ? getEvent(env, existing.id) : null;
 }
 
 async function eventValues(env, body, hub) {
@@ -916,8 +940,8 @@ async function handleApi(request, env, url) {
   if (request.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(request);
     const requestKey = eventRequestKey(body);
-    const existing = await eventByRequestKey(env, hub, requestKey);
-    if (existing) return json(await withChecklist(env, existing));
+    const existing = await eventReceiptByRequestKey(env, hub, requestKey);
+    if (existing) return json(existing);
     const { values, speakers } = await eventValues(env, body, hub);
     await ensureEventIsUnique(env, values);
     let result;
@@ -926,14 +950,18 @@ async function handleApi(request, env, url) {
         (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key,request_key)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(...values, hub, requestKey).run();
     } catch (error) {
-      const retried = await eventByRequestKey(env, hub, requestKey);
-      if (retried) return json(await withChecklist(env, retried));
+      const retried = await eventReceiptByRequestKey(env, hub, requestKey);
+      if (retried) return json(retried);
       throw error;
     }
-    await syncEventSpeakers(env, result.meta.last_row_id, speakers);
-    await createEventChecklist(env, result.meta.last_row_id, checklistDueDates(body));
-    await applyStatusChecklist(env, result.meta.last_row_id, values[8]);
-    return json(await withChecklist(env, await getEvent(env, result.meta.last_row_id)), 201);
+    await initializeEventOperations(
+      env,
+      result.meta.last_row_id,
+      speakers,
+      checklistDueDates(body),
+      values[8]
+    );
+    return json({ id: result.meta.last_row_id, request_key: requestKey }, 201);
   }
 
   if (request.method === 'POST' && url.pathname === '/api/events/import') {
@@ -962,6 +990,13 @@ async function handleApi(request, env, url) {
   if (match && request.method === 'DELETE') {
     const result = await env.DB.prepare('DELETE FROM speakers WHERE id = ?').bind(match[1]).run();
     return result.meta.changes ? json({ ok: true }) : json({ error: 'Speaker not found' }, 404);
+  }
+
+  const eventRequestMatch = url.pathname.match(/^\/api\/events\/request\/([A-Za-z0-9_-]+)$/);
+  if (eventRequestMatch && request.method === 'GET') {
+    const requestKey = eventRequestKey({ request_key: eventRequestMatch[1] });
+    const receipt = await eventReceiptByRequestKey(env, hub, requestKey);
+    return receipt ? json(receipt) : json({ error: 'Event not found' }, 404);
   }
 
   const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);

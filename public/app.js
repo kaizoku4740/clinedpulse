@@ -225,20 +225,16 @@ async function loadEvents(path, filters) {
   try {
     const events = await api(path);
     localStorage.setItem(cacheKey, JSON.stringify(events));
-    return { events, source: 'database' };
-  } catch (error) {
+    return events;
+  } catch {
     try {
       const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
-      if (Array.isArray(cached)) return { events: cached, source: 'cache', error };
+      if (Array.isArray(cached)) return cached;
     } catch {}
     if (activeDataMode === 'test') {
-      return {
-        events: filterEmbeddedEvents(embeddedTestEvents(), filters),
-        source: 'built-in',
-        error
-      };
+      return filterEmbeddedEvents(embeddedTestEvents(), filters);
     }
-    throw error;
+    return [];
   }
 }
 
@@ -970,16 +966,9 @@ async function eventsDashboard() {
   if (status) query.set('status', status);
   query.set('sort', sort);
   const eventPath = `/api/events${query.toString() ? `?${query}` : ''}`;
-  const result = await loadEvents(eventPath, { month, type, status, sort });
-  const events = result.events;
+  const events = await loadEvents(eventPath, { month, type, status, sort });
   const rows = events.map(eventRow).join('');
-  const fallbackNotice = result.source === 'database' ? '' : `
-    <div class="card offline-notice">
-      <b>Events are available in offline mode.</b>
-      <span>${result.source === 'cache' ? 'Showing the last successful database response.' : 'Showing the built-in test event database.'} Editing requires a connection.</span>
-    </div>`;
   view.innerHTML = `
-    ${fallbackNotice}
     <div class="section-head">
       <div><h2>Event dashboard</h2><p>Track every ClinEdPulse event from planning through follow-up.</p></div>
       <div class="toolbar">

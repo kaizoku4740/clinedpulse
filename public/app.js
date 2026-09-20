@@ -69,6 +69,38 @@ const eventSortOptions = [
   ['readiness_desc', 'Readiness high-low'],
   ['readiness_asc', 'Readiness low-high']
 ];
+const embeddedTestEventRows = {
+  heme: [
+    [67, 'Heme Test Transplant Complications Roundtable', 'Roundtable', 'Dr. Sofia Martinez', '2026-11-08', '15:00', 'Event Ready', 11, 99],
+    [66, 'Heme Test CAR-T Operations Lab', 'Faculty Workshop', 'Dr. Sofia Martinez', '2026-10-24', '14:30', 'Zoom Scheduled', 3, 20],
+    [65, 'Heme Test Lymphoma Tumor Board', 'Tumor Board', 'Dr. Benjamin Cole', '2026-10-10', '13:00', 'Speaker Invited', 0, 0],
+    [64, 'Heme Test AML Case Exchange', 'Case Discussion', 'Dr. Aisha Rahman', '2026-09-26', '12:00', 'Planning', 0, 0],
+    [69, 'Heme Test Myeloma Conference Debrief', 'Conference Debrief', 'Dr. Benjamin Cole', '2026-09-07', '12:30', 'Completed', 11, 99],
+    [68, 'Heme Test Benign Hematology Update', 'Webinar', 'Dr. Ethan Brooks', '2026-08-05', '11:00', 'Follow-Up Complete', 12, 100],
+    [58, 'HemeHub Test Webinar', 'Webinar', 'Dr. Maya Chen', '2026-08-03', '14:00', 'Materials Pending', 8, 60],
+    [59, 'HemeHub Completed Test Session', 'Case Discussion', 'Dr. Noah Williams', '2026-06-20', '11:00', 'Completed', 11, 99]
+  ],
+  endo: [
+    [73, 'Endo Test Adrenal Disorders Summit', 'Summit Session', 'Dr. Leo Bennett', '2026-10-31', '15:30', 'Event Ready', 11, 99],
+    [72, 'Endo Test Pituitary Imaging Workshop', 'Faculty Workshop', 'Dr. Daniel Foster', '2026-10-17', '14:00', 'Zoom Scheduled', 3, 20],
+    [71, 'Endo Test Diabetes Technology Roundtable', 'Roundtable', 'Dr. Amara Okafor', '2026-10-05', '13:00', 'Speaker Confirmed', 1, 10],
+    [70, 'Endo Test Thyroid Nodule Case Lab', 'Case Discussion', 'Dr. Hannah Kim', '2026-09-24', '09:00', 'Planning', 0, 0],
+    [75, 'Endo Test Bone Health Debrief', 'Conference Debrief', 'Dr. Luis Rivera', '2026-09-09', '12:00', 'Completed', 11, 99],
+    [74, 'Endo Test Obesity Care Update', 'Webinar', 'Dr. Priya Shah', '2026-08-15', '10:00', 'Follow-Up Complete', 12, 100],
+    [60, 'Endo Test Faculty Workshop', 'Faculty Workshop', 'Dr. Luis Rivera', '2026-08-07', '13:30', 'Materials Pending', 9, 80],
+    [61, 'Endo Completed Test Webinar', 'Webinar', 'Dr. Priya Shah', '2026-06-29', '10:00', 'Completed', 11, 99]
+  ],
+  gastro: [
+    [79, 'Gastro Test Motility Disorders Forum', 'Roundtable', 'Dr. Samuel Lee', '2026-10-28', '15:00', 'Event Ready', 11, 99],
+    [78, 'Gastro Test Advanced Endoscopy Workshop', 'Faculty Workshop', 'Dr. Nia Campbell', '2026-10-13', '14:00', 'Materials Pending', 8, 60],
+    [77, 'Gastro Test Liver Disease Update', 'Webinar', 'Dr. Julian Wright', '2026-10-04', '12:00', 'Speaker Confirmed', 1, 10],
+    [76, 'Gastro Test IBD Case Exchange', 'Case Discussion', 'Dr. Isabel Torres', '2026-09-25', '11:30', 'Speaker Invited', 0, 0],
+    [81, 'Gastro Test Nutrition Conference Debrief', 'Conference Debrief', 'Dr. Marcus Green', '2026-09-11', '13:30', 'Completed', 11, 99],
+    [80, 'Gastro Test Colorectal Screening Review', 'Webinar', 'Dr. Elena Park', '2026-08-10', '10:30', 'Follow-Up Complete', 12, 100],
+    [62, 'Gastro Test Summit Session', 'Summit Session', 'Dr. Elena Park', '2026-07-30', '15:00', 'Materials Pending', 8, 60],
+    [63, 'Gastro Completed Test Discussion', 'Case Discussion', 'Dr. Marcus Green', '2026-07-04', '12:00', 'Completed', 11, 99]
+  ]
+};
 const checklistDueLabels = [
   'Speaker Confirmed',
   'Zoom Created',
@@ -144,6 +176,70 @@ function toast(message) {
 
 function empty(message, title = 'No speakers yet') {
   return `<div class="empty"><span>✦</span><h3>${escapeHtml(title)}</h3><p>${escapeHtml(message)}</p></div>`;
+}
+
+function embeddedTestEvents(hub = activeHub) {
+  return (embeddedTestEventRows[hub] || []).map(row => ({
+    id: row[0],
+    event_name: row[1],
+    event_type: row[2],
+    speaker_name: row[3],
+    speaker: row[3],
+    event_date: row[4],
+    event_time: row[5],
+    status: row[6],
+    checklist_done: row[7],
+    readiness_score: row[8],
+    checklist_total: 12,
+    hub_key: `test-${hub}`,
+    topic: '',
+    zoom_link: ''
+  }));
+}
+
+function filterEmbeddedEvents(events, { month, type, status, sort }) {
+  const filtered = events.filter(event =>
+    (!month || event.event_date.startsWith(month)) &&
+    (!type || event.event_type === type) &&
+    (!status || event.status === status)
+  );
+  const eventTime = event => new Date(`${event.event_date}T${event.event_time || '00:00'}`).valueOf();
+  const today = Date.now();
+  const sorters = {
+    date_desc: (a, b) => eventTime(b) - eventTime(a),
+    date_asc: (a, b) => eventTime(a) - eventTime(b),
+    closest_date: (a, b) => Math.abs(eventTime(a) - today) - Math.abs(eventTime(b) - today),
+    farthest_date: (a, b) => Math.abs(eventTime(b) - today) - Math.abs(eventTime(a) - today),
+    readiness_desc: (a, b) => Number(b.readiness_score || 0) - Number(a.readiness_score || 0),
+    readiness_asc: (a, b) => Number(a.readiness_score || 0) - Number(b.readiness_score || 0)
+  };
+  return filtered.sort(sorters[sort] || sorters.date_desc);
+}
+
+function eventCacheKey(path) {
+  return `clinedpulse-events:${activeHub}:${activeDataMode}:${path}`;
+}
+
+async function loadEvents(path, filters) {
+  const cacheKey = eventCacheKey(path);
+  try {
+    const events = await api(path);
+    localStorage.setItem(cacheKey, JSON.stringify(events));
+    return { events, source: 'database' };
+  } catch (error) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+      if (Array.isArray(cached)) return { events: cached, source: 'cache', error };
+    } catch {}
+    if (activeDataMode === 'test') {
+      return {
+        events: filterEmbeddedEvents(embeddedTestEvents(), filters),
+        source: 'built-in',
+        error
+      };
+    }
+    throw error;
+  }
 }
 
 function activate(route) {
@@ -873,9 +969,17 @@ async function eventsDashboard() {
   if (type) query.set('type', type);
   if (status) query.set('status', status);
   query.set('sort', sort);
-  const events = await api(`/api/events${query.toString() ? `?${query}` : ''}`);
+  const eventPath = `/api/events${query.toString() ? `?${query}` : ''}`;
+  const result = await loadEvents(eventPath, { month, type, status, sort });
+  const events = result.events;
   const rows = events.map(eventRow).join('');
+  const fallbackNotice = result.source === 'database' ? '' : `
+    <div class="card offline-notice">
+      <b>Events are available in offline mode.</b>
+      <span>${result.source === 'cache' ? 'Showing the last successful database response.' : 'Showing the built-in test event database.'} Editing requires a connection.</span>
+    </div>`;
   view.innerHTML = `
+    ${fallbackNotice}
     <div class="section-head">
       <div><h2>Event dashboard</h2><p>Track every ClinEdPulse event from planning through follow-up.</p></div>
       <div class="toolbar">

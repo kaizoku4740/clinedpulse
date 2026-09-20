@@ -119,16 +119,15 @@ async function verifyCalendlySignature(request, raw, env) {
 
 function validateSpeaker(body) {
   if (!body.name?.trim()) throw Object.assign(new Error('Name is required'), { status: 400 });
-  if (!/^\S+@\S+\.\S+$/.test(body.email || '')) {
-    throw Object.assign(new Error('A valid email is required'), { status: 400 });
+  if (body.email?.trim() && !/^\S+@\S+\.\S+$/.test(body.email.trim())) {
+    throw Object.assign(new Error('Enter a valid email or leave it blank'), { status: 400 });
   }
 }
 
 function validateEvent(body) {
   if (!body.event_name?.trim()) throw Object.assign(new Error('Event name is required'), { status: 400 });
-  if (!eventTypes.has(body.event_type)) throw Object.assign(new Error('Choose a valid event type'), { status: 400 });
-  if (!body.event_date) throw Object.assign(new Error('Date is required'), { status: 400 });
-  if (!eventStatuses.has(body.status)) throw Object.assign(new Error('Choose a valid status'), { status: 400 });
+  if (body.event_type && !eventTypes.has(body.event_type)) throw Object.assign(new Error('Choose a valid event type'), { status: 400 });
+  if (body.status && !eventStatuses.has(body.status)) throw Object.assign(new Error('Choose a valid status'), { status: 400 });
 }
 
 function duplicateWarning(message) {
@@ -145,6 +144,7 @@ function constraintMessage(error) {
 }
 
 async function ensureSpeakerIsUnique(env, body, ignoreId = null) {
+  if (!body.email?.trim()) return;
   const duplicate = await env.DB.prepare(`SELECT id,name,email FROM speakers
     WHERE lower(email) = lower(?) AND (? IS NULL OR id != ?)
     LIMIT 1`).bind(body.email || '', ignoreId, ignoreId).first();
@@ -240,34 +240,48 @@ function calendlyEventBody(body) {
 }
 
 function speakerValues(body) {
+  const email = body.email?.trim() || `missing-email-${crypto.randomUUID()}@clinedpulse.invalid`;
   return [
     body.name.trim(),
-    body.email.trim(),
+    email,
     body.institution || '',
     body.specialty || '',
+    body.expertise || '',
     body.faculty_profile_url || '',
     body.notes || '',
     body.participation_history || ''
   ];
 }
 
+function publicSpeaker(speaker) {
+  if (!speaker) return speaker;
+  return {
+    ...speaker,
+    email: /^missing-email-[^@]+@clinedpulse\.invalid$/i.test(speaker.email || '') ? '' : speaker.email
+  };
+}
+
 async function getSpeaker(env, id) {
-  return env.DB.prepare('SELECT * FROM speakers WHERE id = ?').bind(id).first();
+  return publicSpeaker(await env.DB.prepare('SELECT * FROM speakers WHERE id = ?').bind(id).first());
 }
 
 async function getSpeakerPastEvents(env, id) {
   const { results } = await env.DB.prepare(`SELECT id,event_name,event_type,event_date,event_time,topic,status
     FROM events
-    WHERE speaker_id = ? AND event_date < date('now')
-    ORDER BY event_date DESC, event_time DESC, id DESC`).bind(id).all();
+    WHERE (speaker_id = ? OR EXISTS (
+      SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+    )) AND event_date < date('now')
+    ORDER BY event_date DESC, event_time DESC, id DESC`).bind(id, id).all();
   return results;
 }
 
 async function getSpeakerScheduledEvents(env, id) {
   const { results } = await env.DB.prepare(`SELECT id,event_name,event_type,event_date,event_time,topic,status
     FROM events
-    WHERE speaker_id = ? AND event_date >= date('now')
-    ORDER BY event_date, event_time, id`).bind(id).all();
+    WHERE (speaker_id = ? OR EXISTS (
+      SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+    )) AND event_date >= date('now')
+    ORDER BY event_date, event_time, id`).bind(id, id).all();
   return results;
 }
 
@@ -290,12 +304,43 @@ async function resolveEventSpeaker(env, body) {
   if (body.speaker_id) return getSpeaker(env, body.speaker_id);
   const lookup = (body.speaker_email || body.speaker_name || body.speaker || '').trim();
   if (!lookup) return null;
-  return env.DB.prepare('SELECT * FROM speakers WHERE lower(email) = lower(?) OR lower(name) = lower(?) ORDER BY name LIMIT 1')
-    .bind(lookup, lookup).first();
+  return publicSpeaker(await env.DB.prepare('SELECT * FROM speakers WHERE lower(email) = lower(?) OR lower(name) = lower(?) ORDER BY name LIMIT 1')
+    .bind(lookup, lookup).first());
+}
+
+async function resolveEventSpeakers(env, body, hub) {
+  const requested = Array.isArray(body.speaker_ids) ? body.speaker_ids : body.speaker_id ? [body.speaker_id] : [];
+  const ids = [...new Set(requested.map(value => Number(value)).filter(Number.isInteger))];
+  const speakers = [];
+  for (const id of ids) {
+    const speaker = await getSpeaker(env, id);
+    if (speaker && (!hub || speaker.hub_key === hub)) speakers.push(speaker);
+  }
+  if (!speakers.length) {
+    const fallback = await resolveEventSpeaker(env, body);
+    if (fallback && (!hub || fallback.hub_key === hub)) speakers.push(fallback);
+  }
+  return speakers;
+}
+
+async function syncEventSpeakers(env, eventId, speakers) {
+  const statements = [env.DB.prepare('DELETE FROM event_speakers WHERE event_id = ?').bind(eventId)];
+  speakers.forEach((speaker, position) => {
+    statements.push(env.DB.prepare('INSERT INTO event_speakers (event_id,speaker_id,position) VALUES (?,?,?)')
+      .bind(eventId, speaker.id, position));
+  });
+  await env.DB.batch(statements);
 }
 
 async function getEvent(env, id) {
-  return env.DB.prepare(`SELECT events.*, COALESCE(speakers.name, events.speaker_name) speaker,
+  return env.DB.prepare(`SELECT events.*, COALESCE((
+      SELECT group_concat(name, ', ') FROM (
+        SELECT speakers.name name FROM event_speakers
+        JOIN speakers ON speakers.id = event_speakers.speaker_id
+        WHERE event_speakers.event_id = events.id
+        ORDER BY event_speakers.position, speakers.name
+      )
+    ), speakers.name, events.speaker_name) speaker,
     COUNT(event_checklist_items.id) checklist_total,
     COALESCE(SUM(CASE WHEN event_checklist_items.completed = 1 THEN 1 ELSE 0 END), 0) checklist_done,
     ${readinessScoreSql} readiness_score
@@ -312,8 +357,23 @@ async function getChecklist(env, eventId) {
   return results;
 }
 
+async function getEventSpeakers(env, eventId) {
+  const { results } = await env.DB.prepare(`SELECT speakers.* FROM event_speakers
+    JOIN speakers ON speakers.id = event_speakers.speaker_id
+    WHERE event_speakers.event_id = ?
+    ORDER BY event_speakers.position, speakers.name`).bind(eventId).all();
+  if (results.length) return results.map(publicSpeaker);
+  const event = await env.DB.prepare('SELECT speaker_id FROM events WHERE id = ?').bind(eventId).first();
+  const fallback = event?.speaker_id ? await getSpeaker(env, event.speaker_id) : null;
+  return fallback ? [fallback] : [];
+}
+
 async function withChecklist(env, event) {
-  return event ? { ...event, checklist: await getChecklist(env, event.id) } : event;
+  return event ? {
+    ...event,
+    speakers: await getEventSpeakers(env, event.id),
+    checklist: await getChecklist(env, event.id)
+  } : event;
 }
 
 function dateOnly(date) {
@@ -388,27 +448,27 @@ async function overviewTasks(env, hub) {
   return { todo: todo.results, urgent: urgent.results, upcoming: upcoming.results };
 }
 
-async function eventValues(env, body) {
+async function eventValues(env, body, hub) {
   validateEvent(body);
-  const speaker = await resolveEventSpeaker(env, body);
-  if (!speaker) throw Object.assign(new Error('Speaker is required'), { status: 400 });
-  return [
+  const speakers = await resolveEventSpeakers(env, body, hub);
+  const primary = speakers[0];
+  return { values: [
     body.event_name.trim(),
-    body.event_type,
-    speaker.id,
-    speaker.name,
-    body.event_date,
+    body.event_type || '',
+    primary?.id || null,
+    primary?.name || '',
+    body.event_date || '',
     body.event_time || '',
     body.topic || '',
     body.zoom_link || '',
-    body.status
-  ];
+    body.status || 'Planning'
+  ], speakers };
 }
 
 async function insertSpeaker(env, speaker, hub = 'heme') {
   return env.DB.prepare(`INSERT INTO speakers
-    (name,email,institution,specialty,faculty_profile_url,notes,participation_history,hub_key)
-    VALUES (?,?,?,?,?,?,?,?)`).bind(...speakerValues(speaker), hub).run();
+    (name,email,institution,specialty,expertise,faculty_profile_url,notes,participation_history,hub_key)
+    VALUES (?,?,?,?,?,?,?,?,?)`).bind(...speakerValues(speaker), hub).run();
 }
 
 async function ensureCalendlySpeaker(env, speaker) {
@@ -454,6 +514,7 @@ async function createCalendlyEvent(env, body) {
     event.calendly_event_uri,
     event.calendly_invitee_uri
   ).run();
+  await syncEventSpeakers(env, result.meta.last_row_id, [speaker]);
   await createEventChecklist(env, result.meta.last_row_id, checklistDueDates(event));
   await applyStatusChecklist(env, result.meta.last_row_id, event.status);
   return { created: true, event: await withChecklist(env, await getEvent(env, result.meta.last_row_id)) };
@@ -505,12 +566,12 @@ async function importSpeakers(env, speakers, hub = 'heme') {
   for (const [index, speaker] of speakers.entries()) {
     try {
       validateSpeaker(speaker);
-      const email = speaker.email.trim().toLowerCase();
-      if (seen.has(email)) {
+      const email = speaker.email?.trim().toLowerCase() || '';
+      if (email && seen.has(email)) {
         summary.skipped += 1;
         continue;
       }
-      seen.add(email);
+      if (email) seen.add(email);
       await ensureSpeakerIsUnique(env, speaker);
       await insertSpeaker(env, speaker, hub);
       summary.added += 1;
@@ -534,7 +595,7 @@ async function importEvents(env, events, hub = 'heme') {
   const seen = new Set();
   for (const [index, event] of events.entries()) {
     try {
-      const values = await eventValues(env, event);
+      const { values, speakers } = await eventValues(env, event, hub);
       const duplicateKey = values.slice(0, 6).join('|').toLowerCase();
       if (seen.has(duplicateKey)) {
         summary.skipped += 1;
@@ -545,6 +606,7 @@ async function importEvents(env, events, hub = 'heme') {
       const result = await env.DB.prepare(`INSERT INTO events
         (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
         VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(...values, hub).run();
+      await syncEventSpeakers(env, result.meta.last_row_id, speakers);
       await createEventChecklist(env, result.meta.last_row_id, checklistDueDates(event));
       await applyStatusChecklist(env, result.meta.last_row_id, values[8]);
       summary.added += 1;
@@ -578,11 +640,13 @@ async function storeEmailMaterialReviews(env, email) {
   const hub = hubKey(speaker?.hub_key || email.hub_key);
   const matchedEvent = speaker
     ? await env.DB.prepare(`SELECT id,event_name,event_date FROM events
-      WHERE speaker_id = ? AND hub_key = ?
+      WHERE (speaker_id = ? OR EXISTS (
+        SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+      )) AND hub_key = ?
       ORDER BY CASE WHEN event_date >= date('now') THEN 0 ELSE 1 END,
         CASE WHEN event_date >= date('now') THEN event_date END ASC,
         event_date DESC, id DESC
-      LIMIT 1`).bind(speaker.id, hub).first()
+      LIMIT 1`).bind(speaker.id, speaker.id, hub).first()
     : null;
 
   let created = 0;
@@ -644,8 +708,10 @@ async function reviewEmailMaterial(env, id, hub, action, requestedEventId) {
     JOIN events ON events.id = event_checklist_items.event_id
     WHERE events.id = ? AND events.hub_key = ?
       AND event_checklist_items.label = ?
-      AND (? IS NULL OR events.speaker_id = ?)
-    LIMIT 1`).bind(eventId, hub, review.checklist_label, review.speaker_id, review.speaker_id).first();
+      AND (? IS NULL OR events.speaker_id = ? OR EXISTS (
+        SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+      ))
+    LIMIT 1`).bind(eventId, hub, review.checklist_label, review.speaker_id, review.speaker_id, review.speaker_id).first();
   if (!checklist) throw Object.assign(new Error('A matching event checklist item could not be found'), { status: 404 });
 
   await env.DB.batch([
@@ -709,7 +775,7 @@ async function handleApi(request, env, url) {
       total,
       specialties,
       institutions,
-      recent: recent.results
+      recent: recent.results.map(publicSpeaker)
     });
   }
 
@@ -721,13 +787,14 @@ async function handleApi(request, env, url) {
     const searchColumns = {
       name: ['name'],
       specialty: ['specialty'],
+      expertise: ['expertise'],
       institution: ['institution'],
-      all: ['name', 'specialty', 'institution']
-    }[searchBy] || ['name', 'specialty', 'institution'];
+      all: ['name', 'specialty', 'expertise', 'institution']
+    }[searchBy] || ['name', 'specialty', 'expertise', 'institution'];
     const where = searchColumns.map(column => `${column} LIKE ?`).join(' OR ');
     const { results } = await env.DB.prepare(`SELECT * FROM speakers WHERE hub_key = ? AND (${where}) ORDER BY ${orderBy}`)
       .bind(hub, ...searchColumns.map(() => q)).all();
-    return json(results);
+    return json(results.map(publicSpeaker));
   }
 
   if (request.method === 'GET' && url.pathname === '/api/events') {
@@ -751,7 +818,14 @@ async function handleApi(request, env, url) {
       values.push(status);
     }
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-    const statement = env.DB.prepare(`SELECT events.*, COALESCE(speakers.name, events.speaker_name) speaker,
+    const statement = env.DB.prepare(`SELECT events.*, COALESCE((
+        SELECT group_concat(name, ', ') FROM (
+          SELECT speakers.name name FROM event_speakers
+          JOIN speakers ON speakers.id = event_speakers.speaker_id
+          WHERE event_speakers.event_id = events.id
+          ORDER BY event_speakers.position, speakers.name
+        )
+      ), speakers.name, events.speaker_name) speaker,
       COUNT(event_checklist_items.id) checklist_total,
       COALESCE(SUM(CASE WHEN event_checklist_items.completed = 1 THEN 1 ELSE 0 END), 0) checklist_done,
       ${readinessScoreSql} readiness_score
@@ -825,13 +899,14 @@ async function handleApi(request, env, url) {
 
   if (request.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(request);
-    const values = await eventValues(env, body);
+    const { values, speakers } = await eventValues(env, body, hub);
     await ensureEventIsUnique(env, values);
     const result = await env.DB.prepare(`INSERT INTO events
       (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(...values, hub).run();
+    await syncEventSpeakers(env, result.meta.last_row_id, speakers);
     await createEventChecklist(env, result.meta.last_row_id, checklistDueDates(body));
-    await applyStatusChecklist(env, result.meta.last_row_id, body.status);
+    await applyStatusChecklist(env, result.meta.last_row_id, values[8]);
     return json(await withChecklist(env, await getEvent(env, result.meta.last_row_id)), 201);
   }
 
@@ -851,7 +926,7 @@ async function handleApi(request, env, url) {
     validateSpeaker(body);
     await ensureSpeakerIsUnique(env, body, match[1]);
     const result = await env.DB.prepare(`UPDATE speakers SET
-      name=?,email=?,institution=?,specialty=?,faculty_profile_url=?,notes=?,participation_history=?,updated_at=CURRENT_TIMESTAMP
+      name=?,email=?,institution=?,specialty=?,expertise=?,faculty_profile_url=?,notes=?,participation_history=?,updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).bind(...speakerValues(body), match[1]).run();
     return result.meta.changes
       ? json(await getSpeaker(env, match[1]))
@@ -871,14 +946,15 @@ async function handleApi(request, env, url) {
 
   if (eventMatch && request.method === 'PUT') {
     const body = await parseBody(request);
-    const values = await eventValues(env, body);
+    const { values, speakers } = await eventValues(env, body, hub);
     await ensureEventIsUnique(env, values, eventMatch[1]);
     const result = await env.DB.prepare(`UPDATE events SET
       event_name=?,event_type=?,speaker_id=?,speaker_name=?,event_date=?,event_time=?,topic=?,zoom_link=?,status=?,updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).bind(...values, eventMatch[1]).run();
     if (result.meta.changes) {
+      await syncEventSpeakers(env, eventMatch[1], speakers);
       await updateChecklistDueDates(env, eventMatch[1], checklistDueDates(body));
-      await applyStatusChecklist(env, eventMatch[1], body.status);
+      await applyStatusChecklist(env, eventMatch[1], values[8]);
     }
     return result.meta.changes
       ? json(await withChecklist(env, await getEvent(env, eventMatch[1])))

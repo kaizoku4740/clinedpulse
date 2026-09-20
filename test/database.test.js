@@ -15,10 +15,11 @@ test.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); })
 
 test('stores a complete placeholder speaker profile', () => {
   const result = db.prepare(`INSERT INTO speakers
-    (name,email,institution,specialty,participation_history,notes)
-    VALUES (?,?,?,?,?,?)`).run('Dr. Test Person', 'test@example.com', 'Example Hospital', 'Oncology', 'Sample webinar', 'Placeholder only');
+    (name,email,institution,specialty,expertise,participation_history,notes)
+    VALUES (?,?,?,?,?,?,?)`).run('Dr. Test Person', 'test@example.com', 'Example Hospital', 'Oncology', 'CAR-T education', 'Sample webinar', 'Placeholder only');
   const speaker = db.prepare('SELECT * FROM speakers WHERE id=?').get(result.lastInsertRowid);
   assert.equal(speaker.name, 'Dr. Test Person');
+  assert.equal(speaker.expertise, 'CAR-T education');
   assert.equal(speaker.participation_history, 'Sample webinar');
 });
 
@@ -52,6 +53,21 @@ test('stores event database records linked to speakers', () => {
   assert.equal(row.event_name, 'ClinEdPulse Test Webinar');
   assert.equal(row.speaker_id, speaker.lastInsertRowid);
   assert.equal(row.status, 'Planning');
+});
+
+test('events can link multiple speakers', () => {
+  const first = db.prepare('INSERT INTO speakers (name,email) VALUES (?,?)').run('First Faculty', 'first-faculty@example.com');
+  const second = db.prepare('INSERT INTO speakers (name,email) VALUES (?,?)').run('Second Faculty', 'second-faculty@example.com');
+  const event = db.prepare(`INSERT INTO events
+    (event_name,event_type,speaker_id,speaker_name,event_date,status)
+    VALUES (?,?,?,?,?,?)`).run('Multi Faculty Forum', '', first.lastInsertRowid, 'First Faculty', '', 'Planning');
+  const link = db.prepare('INSERT INTO event_speakers (event_id,speaker_id,position) VALUES (?,?,?)');
+  link.run(event.lastInsertRowid, first.lastInsertRowid, 0);
+  link.run(event.lastInsertRowid, second.lastInsertRowid, 1);
+  const speakers = db.prepare(`SELECT speakers.name FROM event_speakers
+    JOIN speakers ON speakers.id=event_speakers.speaker_id
+    WHERE event_id=? ORDER BY position`).all(event.lastInsertRowid);
+  assert.deepEqual(speakers.map(speaker => speaker.name), ['First Faculty', 'Second Faculty']);
 });
 
 test('speaker history can be derived from linked events', () => {

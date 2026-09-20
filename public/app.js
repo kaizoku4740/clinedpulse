@@ -10,6 +10,43 @@ const hubs = {
 };
 let activeHub = 'heme';
 let activeDataMode = localStorage.getItem('clinedpulse-data-mode') === 'test' ? 'test' : 'live';
+let speakerDragCandidate = null;
+
+function speakerQueueKey() {
+  return `clinedpulse-event-speaker-queue:${activeHub}:${activeDataMode}`;
+}
+
+function queuedSpeakers() {
+  try {
+    const queued = JSON.parse(sessionStorage.getItem(speakerQueueKey()) || '[]');
+    return Array.isArray(queued) ? queued : [];
+  } catch {
+    return [];
+  }
+}
+
+function updateSpeakerQueueBadge() {
+  const badge = $('#eventSpeakerQueueCount');
+  if (!badge) return;
+  const count = queuedSpeakers().length;
+  badge.textContent = count;
+  badge.hidden = count === 0;
+}
+
+function queueSpeakerForEvent(speaker) {
+  const queued = queuedSpeakers();
+  if (!queued.some(item => String(item.id) === String(speaker.id))) {
+    queued.push({ id: Number(speaker.id), name: speaker.name || 'Speaker' });
+    sessionStorage.setItem(speakerQueueKey(), JSON.stringify(queued));
+  }
+  updateSpeakerQueueBadge();
+  return queued.length;
+}
+
+function clearSpeakerQueue() {
+  sessionStorage.removeItem(speakerQueueKey());
+  updateSpeakerQueueBadge();
+}
 
 function setHub(hubKey, announce = false) {
   const key = hubs[hubKey] ? hubKey : 'heme';
@@ -21,6 +58,7 @@ function setHub(hubKey, announce = false) {
   $('#sidebarHub').textContent = hub.label;
   $('meta[name="theme-color"]').setAttribute('content', hub.color);
   localStorage.setItem('clinedpulse-hub', key);
+  updateSpeakerQueueBadge();
   if (announce) {
     toast(`${hub.name} workspace selected`);
     router();
@@ -34,6 +72,7 @@ function setDataMode(mode, announce = false) {
   $('#testModeToggle')?.setAttribute('aria-pressed', String(isTest));
   $('#testModeLabel').textContent = isTest ? 'Test data' : 'Real data';
   localStorage.setItem('clinedpulse-data-mode', activeDataMode);
+  updateSpeakerQueueBadge();
   if (announce) {
     modal.close();
     toast(isTest ? 'Test mode enabled — real data is hidden' : 'Real data restored');
@@ -243,11 +282,12 @@ function activate(route) {
 }
 
 function speakerRow(speaker) {
-  return `<tr data-id="${speaker.id}">
-    <td><div class="person">${avatar(speaker)}<div><b>${escapeHtml(speaker.name)}</b><small>${escapeHtml(speaker.email)}</small></div></div></td>
+  return `<tr data-id="${speaker.id}" data-speaker-name="${escapeHtml(speaker.name)}" draggable="true" title="Drag this speaker onto Events to add them to an event">
+    <td><div class="person"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${avatar(speaker)}<div><b>${escapeHtml(speaker.name)}</b><small>${escapeHtml(speaker.email || 'Email not recorded')}</small></div></div></td>
     <td>${escapeHtml(speaker.specialty || '—')}</td>
+    <td>${escapeHtml(speaker.expertise || '—')}</td>
     <td>${escapeHtml(speaker.institution || '—')}</td>
-    <td>›</td>
+    <td><button class="queue-speaker" type="button" data-queue-speaker="${speaker.id}" aria-label="Queue ${escapeHtml(speaker.name)} for an event">+ Event</button></td>
   </tr>`;
 }
 
@@ -573,6 +613,7 @@ function rowsToSpeakers(rows) {
       name,
       email: pick(row, headers, ['email', 'email address', 'speaker email', 'contact email']),
       specialty: pick(row, headers, ['specialty', 'speciality', 'topic', 'area', 'clinical area']),
+      expertise: pick(row, headers, ['expertise', 'expertise area', 'areas of expertise', 'subspecialty']),
       institution: pick(row, headers, ['institution', 'organization', 'organisation', 'company', 'hospital', 'university']),
       faculty_profile_url: pick(row, headers, ['faculty profile url', 'profile url', 'url', 'website', 'link']),
       participation_history: pick(row, headers, ['participation history', 'previous participation', 'history', 'past events']),
@@ -617,11 +658,12 @@ function exportSpeakersCsv(speakers) {
     return;
   }
   downloadCsv(`clinedpulse-speakers-${exportDate()}.csv`,
-    ['name', 'email', 'specialty', 'institution', 'faculty_profile_url', 'participation_history', 'notes'],
+    ['name', 'email', 'specialty', 'expertise', 'institution', 'faculty_profile_url', 'participation_history', 'notes'],
     speakers.map(speaker => [
       speaker.name,
       speaker.email,
       speaker.specialty,
+      speaker.expertise,
       speaker.institution,
       speaker.faculty_profile_url,
       speaker.participation_history,
@@ -658,8 +700,8 @@ function exportEventsCsv(events) {
 
 function sampleImportCsv() {
   downloadCsv('clinedpulse-speaker-import-template.csv',
-    ['name', 'email', 'specialty', 'institution', 'faculty_profile_url', 'participation_history', 'notes'],
-    [['Dr. Avery Patel', 'avery.patel@example.edu', 'Oncology', 'Example University', 'https://example.edu/avery-patel', '2025 Summit speaker', 'Prefers email']]
+    ['name', 'email', 'specialty', 'expertise', 'institution', 'faculty_profile_url', 'participation_history', 'notes'],
+    [['Dr. Avery Patel', '', 'Oncology', 'Community oncology education', 'Example University', 'https://example.edu/avery-patel', '2025 Summit speaker', 'Prefers email']]
   );
 }
 
@@ -745,6 +787,68 @@ async function fileToEvents(file, speakers) {
 function wireSpeakerRows() {
   $$('tr[data-id]').forEach(row => {
     row.onclick = () => showSpeaker(row.dataset.id);
+    row.onpointerdown = event => {
+      if (event.button !== 0) return;
+      speakerDragCandidate = {
+        id: Number(row.dataset.id),
+        name: row.dataset.speakerName,
+        hub: activeHub,
+        mode: activeDataMode
+      };
+    };
+    row.ondragstart = event => {
+      row.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'copy';
+      event.dataTransfer.setData('application/x-clinedpulse-speaker', JSON.stringify({
+        id: Number(row.dataset.id),
+        name: row.dataset.speakerName,
+        hub: activeHub,
+        mode: activeDataMode
+      }));
+    };
+    row.ondragend = () => row.classList.remove('dragging');
+  });
+  $$('[data-queue-speaker]').forEach(button => {
+    button.onclick = event => {
+      event.stopPropagation();
+      const row = button.closest('tr[data-id]');
+      const count = queueSpeakerForEvent({ id: row.dataset.id, name: row.dataset.speakerName });
+      toast(`${row.dataset.speakerName} queued · ${count} speaker${count === 1 ? '' : 's'} ready for Events`);
+    };
+  });
+}
+
+function wireSpeakerDropTarget() {
+  const target = $('#eventsDropTarget');
+  target.ondragover = event => {
+    if (!Array.from(event.dataTransfer.types || []).includes('application/x-clinedpulse-speaker')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    target.classList.add('speaker-drop-ready');
+  };
+  target.ondragleave = () => target.classList.remove('speaker-drop-ready');
+  target.ondrop = event => {
+    event.preventDefault();
+    target.classList.remove('speaker-drop-ready');
+    try {
+      const speaker = JSON.parse(event.dataTransfer.getData('application/x-clinedpulse-speaker'));
+      if (speaker.hub !== activeHub || speaker.mode !== activeDataMode) {
+        toast('Switch back to the speaker workspace where this drag started');
+        return;
+      }
+      const count = queueSpeakerForEvent(speaker);
+      toast(`${speaker.name} queued · ${count} speaker${count === 1 ? '' : 's'} ready for Events`);
+    } catch {
+      toast('That speaker could not be added');
+    }
+  };
+  document.addEventListener('pointerup', event => {
+    const speaker = speakerDragCandidate;
+    speakerDragCandidate = null;
+    if (!speaker || !event.target.closest?.('#eventsDropTarget')) return;
+    if (speaker.hub !== activeHub || speaker.mode !== activeDataMode) return;
+    const count = queueSpeakerForEvent(speaker);
+    toast(`${speaker.name} queued · ${count} speaker${count === 1 ? '' : 's'} ready for Events`);
   });
 }
 
@@ -755,9 +859,14 @@ function wireEventRows() {
 }
 
 async function updateEventStatus(event, status, options = {}) {
+  const current = Array.isArray(event.speakers) ? event : await api(`/api/events/${event.id}`);
   const updated = await api(`/api/events/${event.id}`, {
     method: 'PUT',
-    body: JSON.stringify({ ...event, status })
+    body: JSON.stringify({
+      ...current,
+      speaker_ids: (current.speakers || []).map(speaker => speaker.id),
+      status
+    })
   });
   toast(`Status updated to ${status}`);
   if (options.refreshDetail) {
@@ -913,12 +1022,13 @@ async function directory() {
   const rows = speakers.map(speakerRow).join('');
   view.innerHTML = `
     <div class="section-head">
-      <div><h2>All speakers</h2><p>Choose a field, then search by name, specialty, or institution.</p></div>
+      <div><h2>All speakers</h2><p>Search the directory, or drag speaker rows onto Events to build a multi-speaker event.</p></div>
       <div class="toolbar">
         <select id="searchBy" aria-label="Search field">
           <option value="all" ${searchBy === 'all' ? 'selected' : ''}>All fields</option>
           <option value="name" ${searchBy === 'name' ? 'selected' : ''}>Name</option>
           <option value="specialty" ${searchBy === 'specialty' ? 'selected' : ''}>Specialty</option>
+          <option value="expertise" ${searchBy === 'expertise' ? 'selected' : ''}>Expertise</option>
           <option value="institution" ${searchBy === 'institution' ? 'selected' : ''}>Institution</option>
         </select>
         <select id="speakerSort" aria-label="Sort speakers">${optionPairs(speakerSortOptions, sort)}</select>
@@ -928,7 +1038,7 @@ async function directory() {
         <button class="button primary" id="addSpeaker">+ Add speaker</button>
       </div>
     </div>
-    <div class="table-card">${rows ? `<table class="table"><thead><tr><th>SPEAKER</th><th>SPECIALTY</th><th>INSTITUTION</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : empty('Try a different search or add a new test profile.')}</div>`;
+    <div class="table-card">${rows ? `<table class="table"><thead><tr><th>SPEAKER</th><th>SPECIALTY</th><th>EXPERTISE</th><th>INSTITUTION</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : empty('Try a different search or add a new test profile.')}</div>`;
 
   let timer;
   const updateSearch = () => {
@@ -968,7 +1078,14 @@ async function eventsDashboard() {
   const eventPath = `/api/events${query.toString() ? `?${query}` : ''}`;
   const events = await loadEvents(eventPath, { month, type, status, sort });
   const rows = events.map(eventRow).join('');
+  const queued = queuedSpeakers();
+  const queueBanner = queued.length ? `
+    <div class="speaker-queue card">
+      <div><b>${queued.length} speaker${queued.length === 1 ? '' : 's'} ready for an event</b><span>${queued.map(speaker => escapeHtml(speaker.name)).join(' · ')}</span></div>
+      <div><button class="button" id="clearSpeakerQueue" type="button">Clear</button><button class="button primary" id="createQueuedEvent" type="button">Create event</button></div>
+    </div>` : '';
   view.innerHTML = `
+    ${queueBanner}
     <div class="section-head">
       <div><h2>Event dashboard</h2><p>Track every ClinEdPulse event from planning through follow-up.</p></div>
       <div class="toolbar">
@@ -1004,6 +1121,11 @@ async function eventsDashboard() {
   $('#exportEvents').onclick = () => exportEventsCsv(events);
   $('#importEvents').onclick = () => importEventsModal();
   $('#addEvent').onclick = () => eventForm();
+  if ($('#clearSpeakerQueue')) $('#clearSpeakerQueue').onclick = () => {
+    clearSpeakerQueue();
+    eventsDashboard();
+  };
+  if ($('#createQueuedEvent')) $('#createQueuedEvent').onclick = () => eventForm();
   wireEventRows();
   wireStatusSelects(events);
 }
@@ -1074,12 +1196,13 @@ async function calendlyIntegration() {
 }
 
 function importPreview(rows = importRows) {
-  const validCount = rows.filter(row => row.name && emailPattern.test(row.email || '')).length;
+  const validCount = rows.filter(row => row.name && (!row.email || emailPattern.test(row.email))).length;
   const invalidCount = rows.length - validCount;
   const previewRows = rows.slice(0, 8).map(row => `<tr>
     <td>${escapeHtml(row.name || 'Missing name')}</td>
-    <td>${escapeHtml(row.email || 'Missing email')}</td>
+    <td>${escapeHtml(row.email || '—')}</td>
     <td>${escapeHtml(row.specialty || '—')}</td>
+    <td>${escapeHtml(row.expertise || '—')}</td>
     <td>${escapeHtml(row.institution || '—')}</td>
   </tr>`).join('');
   return rows.length ? `
@@ -1088,7 +1211,7 @@ function importPreview(rows = importRows) {
       <span><b>${validCount}</b> ready</span>
       <span><b>${invalidCount}</b> needs cleanup</span>
     </div>
-    <div class="table-card compact">${previewRows ? `<table class="table"><thead><tr><th>NAME</th><th>EMAIL</th><th>SPECIALTY</th><th>INSTITUTION</th></tr></thead><tbody>${previewRows}</tbody></table>` : ''}</div>
+    <div class="table-card compact">${previewRows ? `<table class="table"><thead><tr><th>NAME</th><th>EMAIL</th><th>SPECIALTY</th><th>EXPERTISE</th><th>INSTITUTION</th></tr></thead><tbody>${previewRows}</tbody></table>` : ''}</div>
     <div class="modal-actions inline"><button class="button primary" id="runImport" type="button" ${validCount ? '' : 'disabled'}>Import ready rows</button></div>` : `
     <div class="empty small"><span>⇅</span><h3>No spreadsheet loaded</h3><p>Choose an XLSX or CSV file, or paste copied rows from a spreadsheet.</p></div>`;
 }
@@ -1149,7 +1272,7 @@ function importSpeakersModal() {
 }
 
 async function runImport() {
-  const rows = importRows.filter(row => row.name && emailPattern.test(row.email || ''));
+  const rows = importRows.filter(row => row.name && (!row.email || emailPattern.test(row.email)));
   $('#runImport').disabled = true;
   $('#runImport').textContent = 'Importing...';
   try {
@@ -1167,7 +1290,7 @@ async function runImport() {
 }
 
 function eventImportPreview(rows = eventImportRows) {
-  const validCount = rows.filter(row => row.event_name && row.event_type && row.speaker_id && row.event_date && row.status).length;
+  const validCount = rows.filter(row => row.event_name).length;
   const invalidCount = rows.length - validCount;
   const previewRows = rows.slice(0, 8).map(row => `<tr>
     <td>${escapeHtml(row.event_name || 'Missing event')}</td>
@@ -1247,7 +1370,7 @@ async function importEventsModal() {
 }
 
 async function runEventImport() {
-  const rows = eventImportRows.filter(row => row.event_name && row.event_type && row.speaker_id && row.event_date && row.status);
+  const rows = eventImportRows.filter(row => row.event_name);
   $('#runEventImport').disabled = true;
   $('#runEventImport').textContent = 'Importing...';
   try {
@@ -1268,9 +1391,15 @@ function selectField(name, label, values, selected = '', required = false, full 
   return `<div class="field ${full ? 'full' : ''}"><label>${label.toUpperCase()}</label><select name="${name}" ${required ? 'required' : ''}>${options(values, selected, placeholder)}</select></div>`;
 }
 
-function speakerSelectField(speakers, selected = '') {
-  const speakerOptions = speakers.map(speaker => `<option value="${speaker.id}" ${String(speaker.id) === String(selected) ? 'selected' : ''}>${escapeHtml(speaker.name)}${speaker.institution ? ` · ${escapeHtml(speaker.institution)}` : ''}</option>`).join('');
-  return `<div class="field"><label>SPEAKER</label><select name="speaker_id" required><option value="">Choose speaker</option>${speakerOptions}</select></div>`;
+function speakerSelectField(speakers, selectedIds = []) {
+  const selected = new Set(selectedIds.map(String));
+  const speakerOptions = speakers.map(speaker => `<label class="speaker-choice">
+    <input type="checkbox" name="speaker_ids" value="${speaker.id}" ${selected.has(String(speaker.id)) ? 'checked' : ''}>
+    <span><b>${escapeHtml(speaker.name)}</b><small>${escapeHtml([speaker.specialty, speaker.expertise].filter(Boolean).join(' · ') || speaker.institution || 'No details recorded')}</small></span>
+  </label>`).join('');
+  return `<div class="field full"><label>SPEAKERS <span class="optional-label">OPTIONAL · SELECT MULTIPLE</span></label>
+    <div class="speaker-picker">${speakerOptions || '<p>No speakers in this workspace yet. You can still save the event.</p>'}</div>
+  </div>`;
 }
 
 function checklistDueDateFields(event = {}) {
@@ -1282,28 +1411,30 @@ function checklistDueDateFields(event = {}) {
 
 async function eventForm(event = {}) {
   const speakers = await api('/api/speakers');
-  if (!speakers.length) {
-    toast('Add a speaker before creating an event');
-    return;
-  }
+  const selectedSpeakerIds = event.id
+    ? (event.speakers || []).map(speaker => speaker.id)
+    : queuedSpeakers().map(speaker => speaker.id);
   $('#modalBody').innerHTML = `
     <div class="modal-head"><h2>${event.id ? 'Edit' : 'Add'} event</h2><p>Track ClinEdPulse events from planning through completion.</p></div>
     <div class="form-grid">
       ${field('event_name', 'Event name', event.event_name, true)}
-      ${selectField('event_type', 'Event type', eventTypes, event.event_type, true, false, 'Choose type')}
-      ${speakerSelectField(speakers, event.speaker_id)}
-      ${field('event_date', 'Date', event.event_date, true, 'date')}
+      ${selectField('event_type', 'Event type', eventTypes, event.event_type, false, false, 'Choose type')}
+      ${field('event_date', 'Date', event.event_date, false, 'date')}
       ${field('event_time', 'Time', event.event_time, false, 'time')}
-      ${selectField('status', 'Status', eventStatuses, event.status || 'Planning', true, false)}
+      ${selectField('status', 'Status', eventStatuses, event.status || 'Planning', false, false)}
+      ${speakerSelectField(speakers, selectedSpeakerIds)}
       ${field('topic', 'Topic', event.topic, false, 'textarea', true, 'Example: New treatment pathways for community oncology')}
       ${field('zoom_link', 'Zoom link', event.zoom_link, false, 'url', true, 'https://...')}
       ${checklistDueDateFields(event)}
     </div>
-    <div class="modal-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" type="submit">Save event</button></div>`;
+    <div class="modal-actions"><button class="button" id="cancelEventForm" type="button">Cancel</button><button class="button primary" type="submit">Save event</button></div>`;
   modal.showModal();
+  $('#cancelEventForm').onclick = () => modal.close();
   $('#modalForm').onsubmit = async submitEvent => {
     submitEvent.preventDefault();
-    const body = Object.fromEntries(new FormData(submitEvent.target));
+    const formData = new FormData(submitEvent.target);
+    const body = Object.fromEntries(formData);
+    body.speaker_ids = formData.getAll('speaker_ids');
     body.checklist_due_dates = {};
     $$('[data-due-label]').forEach(input => {
       body.checklist_due_dates[input.dataset.dueLabel] = input.value;
@@ -1314,6 +1445,7 @@ async function eventForm(event = {}) {
         method: event.id ? 'PUT' : 'POST', body: JSON.stringify(body)
       });
       modal.close();
+      if (!event.id) clearSpeakerQueue();
       toast(`Event ${event.id ? 'updated' : 'added'}`);
       location.hash.startsWith('#events') ? eventsDashboard() : overview();
     } catch (error) { toast(error.message); }
@@ -1328,7 +1460,7 @@ async function showEvent(id) {
   $('#modalBody').innerHTML = `
     <div class="event-modal">
     <div class="profile-card"><span class="avatar">◷</span><h2>${escapeHtml(event.event_name)}</h2><p>${escapeHtml(event.event_type)} · <span id="checklistCount">${done}/${total || 12}</span> checklist items done</p><div class="event-status-control">${statusSelect(event, false)}</div><div class="event-readiness" id="eventReadiness">${readiness(score, done, total || 12)}</div></div>
-    <div class="detail-body"><h3>Speaker</h3><p>${escapeHtml(event.speaker || event.speaker_name || 'No speaker recorded')}</p></div>
+    <div class="detail-body"><h3>Speakers</h3><p>${escapeHtml(event.speaker || event.speaker_name || 'No speakers recorded')}</p></div>
     <div class="detail-body"><h3>Date and time</h3><p>${formatEventDate(event.event_date)}${event.event_time ? ` at ${escapeHtml(event.event_time)}` : ''}</p></div>
     <div class="detail-body"><h3>Topic</h3><p>${escapeHtml(event.topic || 'No topic recorded.')}</p></div>
     <div class="detail-body"><h3>Zoom link</h3><p>${event.zoom_link ? `<a href="${escapeHtml(event.zoom_link)}" target="_blank" rel="noreferrer">Open Zoom link ↗</a>` : 'No Zoom link recorded.'}</p></div>
@@ -1383,7 +1515,8 @@ async function showSpeaker(id) {
   const speaker = await api(`/api/speakers/${id}`);
   $('#modalBody').innerHTML = `
     <div class="profile-card">${avatar(speaker)}<h2>${escapeHtml(speaker.name)}</h2><p>${escapeHtml(speaker.specialty || 'Specialty not recorded')} · ${escapeHtml(speaker.institution || 'Institution not recorded')}</p></div>
-    <div class="detail-body"><h3>Contact</h3><p>${escapeHtml(speaker.email)}</p>${speaker.faculty_profile_url ? `<p><a href="${escapeHtml(speaker.faculty_profile_url)}" target="_blank" rel="noreferrer">Open faculty profile ↗</a></p>` : ''}</div>
+    <div class="detail-body"><h3>Expertise</h3><p>${escapeHtml(speaker.expertise || 'No expertise recorded.')}</p></div>
+    <div class="detail-body"><h3>Contact</h3><p>${escapeHtml(speaker.email || 'No email recorded.')}</p>${speaker.faculty_profile_url ? `<p><a href="${escapeHtml(speaker.faculty_profile_url)}" target="_blank" rel="noreferrer">Open faculty profile ↗</a></p>` : ''}</div>
     <div class="detail-body"><h3>Speaker history</h3>${speakerHistoryView(speaker)}</div>
     <div class="detail-body"><h3>Previous participation notes</h3><p>${escapeHtml(speaker.participation_history || 'No previous participation notes recorded.')}</p></div>
     <div class="detail-body"><h3>Internal notes</h3><p>${escapeHtml(speaker.notes || 'No internal notes.')}</p></div>
@@ -1419,15 +1552,17 @@ function speakerForm(speaker = {}) {
     <div class="modal-head"><h2>${speaker.id ? 'Edit' : 'Add'} speaker</h2><p>Enter information collected from emails, faculty pages, or existing ClinEdPulse records.</p></div>
     <div class="form-grid">
       ${field('name', 'Full name', speaker.name, true)}
-      ${field('email', 'Email', speaker.email, true, 'email')}
+      ${field('email', 'Email', speaker.email, false, 'email')}
       ${field('specialty', 'Specialty', speaker.specialty)}
+      ${field('expertise', 'Expertise', speaker.expertise, false, 'textarea', true, 'Examples: CAR-T therapy, AML, survivorship care')}
       ${field('institution', 'Institution', speaker.institution)}
       ${field('faculty_profile_url', 'Faculty profile URL', speaker.faculty_profile_url, false, 'url')}
       ${field('participation_history', 'Previous participation history', speaker.participation_history, false, 'textarea', true, 'Example: Participated in 2025 Summit')}
       ${field('notes', 'Internal notes', speaker.notes, false, 'textarea', true, 'Examples: Prefers email communication; interested in hematologic malignancies')}
     </div>
-    <div class="modal-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" type="submit">Save speaker</button></div>`;
+    <div class="modal-actions"><button class="button" id="cancelSpeakerForm" type="button">Cancel</button><button class="button primary" type="submit">Save speaker</button></div>`;
   modal.showModal();
+  $('#cancelSpeakerForm').onclick = () => modal.close();
   $('#modalForm').onsubmit = async event => {
     event.preventDefault();
     const body = Object.fromEntries(new FormData(event.target));
@@ -1464,6 +1599,9 @@ $$('.hub-option').forEach(button => {
 $('#testModeToggle').addEventListener('click', () => {
   setDataMode(activeDataMode === 'test' ? 'live' : 'test', true);
 });
+$('#modalClose').onclick = () => modal.close();
+wireSpeakerDropTarget();
+updateSpeakerQueueBadge();
 document.addEventListener('click', event => {
   if (event.target.matches('[data-action="new-speaker"]')) speakerForm();
 });

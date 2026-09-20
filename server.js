@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,22 +34,30 @@ const parseJson = raw => {
 };
 const parseBody = async req => parseJson(await readBody(req));
 
-const getSpeaker = id => db.prepare('SELECT * FROM speakers WHERE id = ?').get(id);
+const publicSpeaker = speaker => speaker ? ({
+  ...speaker,
+  email: /^missing-email-[^@]+@clinedpulse\.invalid$/i.test(speaker.email || '') ? '' : speaker.email
+}) : speaker;
+const getSpeaker = id => publicSpeaker(db.prepare('SELECT * FROM speakers WHERE id = ?').get(id));
 const getSpeakerPastEvents = id => db.prepare(`SELECT id,event_name,event_type,event_date,event_time,topic,status
   FROM events
-  WHERE speaker_id = ? AND event_date < date('now')
-  ORDER BY event_date DESC, event_time DESC, id DESC`).all(id);
+  WHERE (speaker_id = ? OR EXISTS (
+    SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+  )) AND event_date < date('now')
+  ORDER BY event_date DESC, event_time DESC, id DESC`).all(id, id);
 const getSpeakerScheduledEvents = id => db.prepare(`SELECT id,event_name,event_type,event_date,event_time,topic,status
   FROM events
-  WHERE speaker_id = ? AND event_date >= date('now')
-  ORDER BY event_date, event_time, id`).all(id);
+  WHERE (speaker_id = ? OR EXISTS (
+    SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+  )) AND event_date >= date('now')
+  ORDER BY event_date, event_time, id`).all(id, id);
 const fields = body => [
-  body.name.trim(), body.email.trim(), body.institution || '', body.specialty || '',
+  body.name.trim(), body.email?.trim() || `missing-email-${randomUUID()}@clinedpulse.invalid`, body.institution || '', body.specialty || '', body.expertise || '',
   body.faculty_profile_url || '', body.notes || '', body.participation_history || ''
 ];
 const insertSpeaker = db.prepare(`INSERT INTO speakers
-  (name,email,institution,specialty,faculty_profile_url,notes,participation_history,hub_key)
-  VALUES (?,?,?,?,?,?,?,?)`);
+  (name,email,institution,specialty,expertise,faculty_profile_url,notes,participation_history,hub_key)
+  VALUES (?,?,?,?,?,?,?,?,?)`);
 const eventTypes = new Set(['Case Discussion', 'Summit Session', 'Faculty Workshop', 'Webinar', 'Post-Conference Update']);
 const eventStatuses = new Set([
   'Planning', 'Speaker Invited', 'Speaker Confirmed', 'Zoom Scheduled', 'Materials Pending',
@@ -115,14 +123,15 @@ END`;
 
 function validate(body) {
   if (!body.name?.trim()) throw Object.assign(new Error('Name is required'), { status: 400 });
-  if (!/^\S+@\S+\.\S+$/.test(body.email || '')) throw Object.assign(new Error('A valid email is required'), { status: 400 });
+  if (body.email?.trim() && !/^\S+@\S+\.\S+$/.test(body.email.trim())) {
+    throw Object.assign(new Error('Enter a valid email or leave it blank'), { status: 400 });
+  }
 }
 
 function validateEvent(body) {
   if (!body.event_name?.trim()) throw Object.assign(new Error('Event name is required'), { status: 400 });
-  if (!eventTypes.has(body.event_type)) throw Object.assign(new Error('Choose a valid event type'), { status: 400 });
-  if (!body.event_date) throw Object.assign(new Error('Date is required'), { status: 400 });
-  if (!eventStatuses.has(body.status)) throw Object.assign(new Error('Choose a valid status'), { status: 400 });
+  if (body.event_type && !eventTypes.has(body.event_type)) throw Object.assign(new Error('Choose a valid event type'), { status: 400 });
+  if (body.status && !eventStatuses.has(body.status)) throw Object.assign(new Error('Choose a valid status'), { status: 400 });
 }
 
 function duplicateWarning(message) {
@@ -139,6 +148,7 @@ function constraintMessage(error) {
 }
 
 function ensureSpeakerIsUnique(body, ignoreId = null) {
+  if (!body.email?.trim()) return;
   const duplicate = db.prepare(`SELECT id,name,email FROM speakers
     WHERE lower(email) = lower(?) AND (? IS NULL OR id != ?)
     LIMIT 1`).get(body.email || '', ignoreId, ignoreId);
@@ -257,6 +267,7 @@ function ensureCalendlySpeaker(speaker) {
     speaker.institution || '',
     speaker.specialty || '',
     '',
+    '',
     speaker.notes || '',
     '',
     'heme'
@@ -287,6 +298,7 @@ function createCalendlyEvent(body) {
     event.calendly_event_uri,
     event.calendly_invitee_uri
   );
+  syncEventSpeakers(result.lastInsertRowid, [speaker]);
   createEventChecklist(result.lastInsertRowid, checklistDueDates(event));
   applyStatusChecklist(result.lastInsertRowid, event.status);
   return { created: true, event: withChecklist(getEvent(result.lastInsertRowid)) };
@@ -343,27 +355,45 @@ function resolveEventSpeaker(body) {
   return db.prepare('SELECT * FROM speakers WHERE lower(email) = lower(?) OR lower(name) = lower(?) ORDER BY name LIMIT 1').get(lookup, lookup);
 }
 
-function eventFields(body) {
-  validateEvent(body);
-  const speaker = resolveEventSpeaker(body);
-  if (!speaker) throw Object.assign(new Error('Speaker is required'), { status: 400 });
-  return [
-    body.event_name.trim(), body.event_type, speaker.id, speaker.name,
-    body.event_date, body.event_time || '', body.topic || '', body.zoom_link || '', body.status
-  ];
+function resolveEventSpeakers(body, hub) {
+  const requested = Array.isArray(body.speaker_ids) ? body.speaker_ids : body.speaker_id ? [body.speaker_id] : [];
+  const ids = [...new Set(requested.map(value => Number(value)).filter(Number.isInteger))];
+  const speakers = ids.map(getSpeaker).filter(speaker => speaker && (!hub || speaker.hub_key === hub));
+  if (!speakers.length) {
+    const fallback = resolveEventSpeaker(body);
+    if (fallback && (!hub || fallback.hub_key === hub)) speakers.push(fallback);
+  }
+  return speakers;
 }
 
-function eventInsertFields(body) {
-  validateEvent(body);
-  const speaker = resolveEventSpeaker(body);
-  if (!speaker) throw Object.assign(new Error('Speaker is required'), { status: 400 });
-  return [
-    body.event_name.trim(), body.event_type, speaker.id, speaker.name,
-    body.event_date, body.event_time || '', body.topic || '', body.zoom_link || '', body.status
-  ];
+function syncEventSpeakers(eventId, speakers) {
+  db.prepare('DELETE FROM event_speakers WHERE event_id = ?').run(eventId);
+  const insert = db.prepare('INSERT INTO event_speakers (event_id,speaker_id,position) VALUES (?,?,?)');
+  speakers.forEach((speaker, position) => insert.run(eventId, speaker.id, position));
 }
 
-const eventSelect = `SELECT events.*, COALESCE(speakers.name, events.speaker_name) speaker,
+function eventFields(body, hub) {
+  validateEvent(body);
+  const speakers = resolveEventSpeakers(body, hub);
+  const primary = speakers[0];
+  return { values: [
+    body.event_name.trim(), body.event_type || '', primary?.id || null, primary?.name || '',
+    body.event_date || '', body.event_time || '', body.topic || '', body.zoom_link || '', body.status || 'Planning'
+  ], speakers };
+}
+
+function eventInsertFields(body, hub) {
+  return eventFields(body, hub);
+}
+
+const eventSelect = `SELECT events.*, COALESCE((
+    SELECT group_concat(name, ', ') FROM (
+      SELECT speakers.name name FROM event_speakers
+      JOIN speakers ON speakers.id = event_speakers.speaker_id
+      WHERE event_speakers.event_id = events.id
+      ORDER BY event_speakers.position, speakers.name
+    )
+  ), speakers.name, events.speaker_name) speaker,
   COUNT(event_checklist_items.id) checklist_total,
   COALESCE(SUM(CASE WHEN event_checklist_items.completed = 1 THEN 1 ELSE 0 END), 0) checklist_done,
   ${readinessScoreSql} readiness_score
@@ -373,9 +403,19 @@ const eventSelect = `SELECT events.*, COALESCE(speakers.name, events.speaker_nam
 
 const getEvent = id => db.prepare(`${eventSelect} WHERE events.id = ? GROUP BY events.id`).get(id);
 const getChecklist = eventId => db.prepare('SELECT * FROM event_checklist_items WHERE event_id = ? ORDER BY position, id').all(eventId);
+const getEventSpeakers = eventId => {
+  const speakers = db.prepare(`SELECT speakers.* FROM event_speakers
+    JOIN speakers ON speakers.id = event_speakers.speaker_id
+    WHERE event_speakers.event_id = ?
+    ORDER BY event_speakers.position, speakers.name`).all(eventId).map(publicSpeaker);
+  if (speakers.length) return speakers;
+  const event = db.prepare('SELECT speaker_id FROM events WHERE id = ?').get(eventId);
+  const fallback = event?.speaker_id ? getSpeaker(event.speaker_id) : null;
+  return fallback ? [fallback] : [];
+};
 
 function withChecklist(event) {
-  return event ? { ...event, checklist: getChecklist(event.id) } : event;
+  return event ? { ...event, speakers: getEventSpeakers(event.id), checklist: getChecklist(event.id) } : event;
 }
 
 function withSpeakerHistory(speaker) {
@@ -473,12 +513,12 @@ function importSpeakers(speakers, hub) {
     speakers.forEach((speaker, index) => {
       try {
         validate(speaker);
-        const email = speaker.email.trim().toLowerCase();
-        if (seen.has(email)) {
+        const email = speaker.email?.trim().toLowerCase() || '';
+        if (email && seen.has(email)) {
           summary.skipped += 1;
           return;
         }
-        seen.add(email);
+        if (email) seen.add(email);
         ensureSpeakerIsUnique(speaker);
         insertSpeaker.run(...fields(speaker), hub);
         summary.added += 1;
@@ -509,7 +549,7 @@ function importEvents(events, hub) {
   try {
     events.forEach((event, index) => {
       try {
-        const values = eventInsertFields(event);
+        const { values, speakers } = eventInsertFields(event, hub);
         const duplicateKey = values.slice(0, 6).join('|').toLowerCase();
         if (seen.has(duplicateKey)) {
           summary.skipped += 1;
@@ -521,6 +561,7 @@ function importEvents(events, hub) {
           (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
           VALUES (?,?,?,?,?,?,?,?,?,?)`).run(...values, hub);
         const eventId = db.prepare('SELECT last_insert_rowid() id').get().id;
+        syncEventSpeakers(eventId, speakers);
         createEventChecklist(eventId, checklistDueDates(event));
         applyStatusChecklist(eventId, values[8]);
         summary.added += 1;
@@ -558,11 +599,13 @@ function storeEmailMaterialReviews(email) {
   const hub = hubKey(speaker?.hub_key || email.hub_key);
   const matchedEvent = speaker
     ? db.prepare(`SELECT id,event_name,event_date FROM events
-      WHERE speaker_id = ? AND hub_key = ?
+      WHERE (speaker_id = ? OR EXISTS (
+        SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+      )) AND hub_key = ?
       ORDER BY CASE WHEN event_date >= date('now') THEN 0 ELSE 1 END,
         CASE WHEN event_date >= date('now') THEN event_date END ASC,
         event_date DESC, id DESC
-      LIMIT 1`).get(speaker.id, hub)
+      LIMIT 1`).get(speaker.id, speaker.id, hub)
     : null;
   const insert = db.prepare(`INSERT OR IGNORE INTO email_material_reviews
     (message_key,sender_email,recipient_email,subject,attachment_name,material_type,checklist_label,speaker_id,event_id,hub_key)
@@ -619,8 +662,10 @@ function reviewEmailMaterial(id, hub, action, requestedEventId) {
     JOIN events ON events.id = event_checklist_items.event_id
     WHERE events.id = ? AND events.hub_key = ?
       AND event_checklist_items.label = ?
-      AND (? IS NULL OR events.speaker_id = ?)
-    LIMIT 1`).get(eventId, hub, review.checklist_label, review.speaker_id, review.speaker_id);
+      AND (? IS NULL OR events.speaker_id = ? OR EXISTS (
+        SELECT 1 FROM event_speakers WHERE event_speakers.event_id = events.id AND event_speakers.speaker_id = ?
+      ))
+    LIMIT 1`).get(eventId, hub, review.checklist_label, review.speaker_id, review.speaker_id, review.speaker_id);
   if (!checklist) throw Object.assign(new Error('A matching event checklist item could not be found'), { status: 404 });
   db.exec('BEGIN');
   try {
@@ -667,7 +712,7 @@ async function api(req, res, url) {
         urgentTasks: tasks.urgent.length,
         upcomingTasks: tasks.upcoming.length
       },
-      total, specialties, institutions, recent: db.prepare('SELECT * FROM speakers WHERE hub_key = ? ORDER BY created_at DESC, id DESC LIMIT 5').all(hub)
+      total, specialties, institutions, recent: db.prepare('SELECT * FROM speakers WHERE hub_key = ? ORDER BY created_at DESC, id DESC LIMIT 5').all(hub).map(publicSpeaker)
     });
   }
 
@@ -679,12 +724,13 @@ async function api(req, res, url) {
     const searchColumns = {
       name: ['name'],
       specialty: ['specialty'],
+      expertise: ['expertise'],
       institution: ['institution'],
-      all: ['name', 'specialty', 'institution']
-    }[searchBy] || ['name', 'specialty', 'institution'];
+      all: ['name', 'specialty', 'expertise', 'institution']
+    }[searchBy] || ['name', 'specialty', 'expertise', 'institution'];
     const where = searchColumns.map(column => `${column} LIKE ?`).join(' OR ');
     const rows = db.prepare(`SELECT * FROM speakers WHERE hub_key = ? AND (${where}) ORDER BY ${orderBy}`).all(hub, ...searchColumns.map(() => q));
-    return json(res, 200, rows);
+    return json(res, 200, rows.map(publicSpeaker));
   }
 
   if (req.method === 'GET' && url.pathname === '/api/events') {
@@ -771,13 +817,14 @@ async function api(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(req);
-    const values = eventInsertFields(body);
+    const { values, speakers } = eventInsertFields(body, hub);
     ensureEventIsUnique(values);
     const result = db.prepare(`INSERT INTO events
       (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).run(...values, hub);
+    syncEventSpeakers(result.lastInsertRowid, speakers);
     createEventChecklist(result.lastInsertRowid, checklistDueDates(body));
-    applyStatusChecklist(result.lastInsertRowid, body.status);
+    applyStatusChecklist(result.lastInsertRowid, values[8]);
     return json(res, 201, withChecklist(getEvent(result.lastInsertRowid)));
   }
 
@@ -796,7 +843,7 @@ async function api(req, res, url) {
     const body = await parseBody(req); validate(body);
     ensureSpeakerIsUnique(body, match[1]);
     const result = db.prepare(`UPDATE speakers SET
-      name=?,email=?,institution=?,specialty=?,faculty_profile_url=?,notes=?,participation_history=?,updated_at=CURRENT_TIMESTAMP
+      name=?,email=?,institution=?,specialty=?,expertise=?,faculty_profile_url=?,notes=?,participation_history=?,updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).run(...fields(body), match[1]);
     return result.changes ? json(res, 200, getSpeaker(match[1])) : json(res, 404, { error: 'Speaker not found' });
   }
@@ -814,14 +861,15 @@ async function api(req, res, url) {
 
   if (eventMatch && req.method === 'PUT') {
     const body = await parseBody(req);
-    const values = eventFields(body);
+    const { values, speakers } = eventFields(body, hub);
     ensureEventIsUnique(values, eventMatch[1]);
     const result = db.prepare(`UPDATE events SET
       event_name=?,event_type=?,speaker_id=?,speaker_name=?,event_date=?,event_time=?,topic=?,zoom_link=?,status=?,updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).run(...values, eventMatch[1]);
     if (result.changes) {
+      syncEventSpeakers(eventMatch[1], speakers);
       updateChecklistDueDates(eventMatch[1], checklistDueDates(body));
-      applyStatusChecklist(eventMatch[1], body.status);
+      applyStatusChecklist(eventMatch[1], values[8]);
     }
     return result.changes ? json(res, 200, withChecklist(getEvent(eventMatch[1]))) : json(res, 404, { error: 'Event not found' });
   }

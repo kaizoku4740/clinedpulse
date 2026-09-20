@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20260720-test-mode">
+  <link rel="stylesheet" href="/styles.css?v=20260920-expertise-multispeaker">
 </head>
 <body>
   <aside class="sidebar">
@@ -18,7 +18,7 @@
     <nav aria-label="Main navigation">
       <a href="#dashboard" data-route="dashboard">⌂ <span>Overview</span></a>
       <a href="#speakers" data-route="speakers">◎ <span>Speakers</span></a>
-      <a href="#events" data-route="events">◷ <span>Events</span></a>
+      <a href="#events" data-route="events" id="eventsDropTarget">◷ <span>Events</span><b id="eventSpeakerQueueCount" hidden></b></a>
       <a href="#email" data-route="email">✉ <span>Email review</span></a>
     </nav>
     <div class="sidebar-note"><small id="sidebarHub">HEMEHUB</small><p>Event database</p></div>
@@ -43,9 +43,9 @@
     <section id="view" class="view" aria-live="polite"></section>
   </main>
 
-  <dialog id="modal"><form method="dialog" id="modalForm"><button class="close" value="cancel" aria-label="Close">×</button><div id="modalBody"></div></form></dialog>
+  <dialog id="modal"><form method="dialog" id="modalForm"><button class="close" id="modalClose" type="button" aria-label="Close">×</button><div id="modalBody"></div></form></dialog>
 
   <template id="emptyTemplate"><div class="empty"><span>✦</span><h3>Nothing here yet</h3><p></p></div></template>
-  <script type="module" src="/app.js?v=20260720-test-mode"></script>
+  <script type="module" src="/app.js?v=20260920-expertise-multispeaker"></script>
 </body>
 </html>

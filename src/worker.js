@@ -18,7 +18,7 @@ const speakerSorts = {
   newest: 'created_at DESC, id DESC'
 };
 const eventSorts = {
-  date_desc: 'event_date DESC, event_time DESC, events.id DESC',
+  date_desc: "CASE WHEN event_date = '' THEN 0 ELSE 1 END ASC, event_date DESC, event_time DESC, events.id DESC",
   date_asc: 'event_date ASC, event_time ASC, events.id ASC',
   closest_date: "ABS(julianday(event_date) - julianday('now')) ASC, event_date ASC, event_time ASC, events.id ASC",
   farthest_date: "ABS(julianday(event_date) - julianday('now')) DESC, event_date DESC, event_time DESC, events.id DESC",
@@ -447,6 +447,21 @@ async function overviewTasks(env, hub) {
       ORDER BY event_checklist_items.due_date IS NULL, event_checklist_items.due_date, events.event_date, event_checklist_items.position`).bind(hub).all()
   ]);
   return { todo: todo.results, urgent: urgent.results, upcoming: upcoming.results };
+}
+
+function eventRequestKey(body) {
+  const key = String(body.request_key || '').trim();
+  if (key && !/^[A-Za-z0-9_-]{8,96}$/.test(key)) {
+    throw Object.assign(new Error('Invalid event request key'), { status: 400 });
+  }
+  return key;
+}
+
+async function eventByRequestKey(env, hub, requestKey) {
+  if (!requestKey) return null;
+  const existing = await env.DB.prepare('SELECT id FROM events WHERE hub_key = ? AND request_key = ?')
+    .bind(hub, requestKey).first();
+  return existing ? getEvent(env, existing.id) : null;
 }
 
 async function eventValues(env, body, hub) {
@@ -900,11 +915,21 @@ async function handleApi(request, env, url) {
 
   if (request.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(request);
+    const requestKey = eventRequestKey(body);
+    const existing = await eventByRequestKey(env, hub, requestKey);
+    if (existing) return json(await withChecklist(env, existing));
     const { values, speakers } = await eventValues(env, body, hub);
     await ensureEventIsUnique(env, values);
-    const result = await env.DB.prepare(`INSERT INTO events
-      (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(...values, hub).run();
+    let result;
+    try {
+      result = await env.DB.prepare(`INSERT INTO events
+        (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key,request_key)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(...values, hub, requestKey).run();
+    } catch (error) {
+      const retried = await eventByRequestKey(env, hub, requestKey);
+      if (retried) return json(await withChecklist(env, retried));
+      throw error;
+    }
     await syncEventSpeakers(env, result.meta.last_row_id, speakers);
     await createEventChecklist(env, result.meta.last_row_id, checklistDueDates(body));
     await applyStatusChecklist(env, result.meta.last_row_id, values[8]);

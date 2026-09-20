@@ -101,7 +101,7 @@ const speakerSortOptions = [
   ['newest', 'Newest added']
 ];
 const eventSortOptions = [
-  ['date_desc', 'Date newest first'],
+  ['date_desc', 'Unscheduled, then newest'],
   ['date_asc', 'Date oldest first'],
   ['closest_date', 'Closest date'],
   ['farthest_date', 'Farthest date'],
@@ -172,8 +172,15 @@ async function api(path, options = {}, attempt = 0) {
     : path;
   const method = String(options.method || 'GET').toUpperCase();
   let body = options.body;
+  let retryableEventSave = false;
   if (body) {
-    try { body = JSON.stringify({ ...JSON.parse(body), hub_key: activeHub }); } catch {}
+    try {
+      const parsed = JSON.parse(body);
+      retryableEventSave = method === 'POST'
+        && path.split('?')[0] === '/api/events'
+        && Boolean(parsed.request_key);
+      body = JSON.stringify({ ...parsed, hub_key: activeHub });
+    } catch {}
   }
   let response;
   try {
@@ -184,7 +191,7 @@ async function api(path, options = {}, attempt = 0) {
       cache: method === 'GET' ? 'no-store' : options.cache
     });
   } catch (error) {
-    if (method === 'GET' && attempt < 2) {
+    if ((method === 'GET' || retryableEventSave) && attempt < 2) {
       await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
       return api(path, options, attempt + 1);
     }
@@ -198,7 +205,7 @@ async function api(path, options = {}, attempt = 0) {
       ? 'ClinEdPulse returned an unreadable response. Please try again.'
       : `ClinEdPulse request failed (${response.status}).`);
   }
-  if (!response.ok && method === 'GET' && response.status >= 500 && attempt < 2) {
+  if (!response.ok && (method === 'GET' || retryableEventSave) && response.status >= 500 && attempt < 2) {
     await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
     return api(path, options, attempt + 1);
   }
@@ -243,9 +250,10 @@ function filterEmbeddedEvents(events, { month, type, status, sort }) {
     (!status || event.status === status)
   );
   const eventTime = event => new Date(`${event.event_date}T${event.event_time || '00:00'}`).valueOf();
+  const undatedFirst = (a, b) => Number(Boolean(a.event_date)) - Number(Boolean(b.event_date));
   const today = Date.now();
   const sorters = {
-    date_desc: (a, b) => eventTime(b) - eventTime(a),
+    date_desc: (a, b) => undatedFirst(a, b) || eventTime(b) - eventTime(a),
     date_asc: (a, b) => eventTime(a) - eventTime(b),
     closest_date: (a, b) => Math.abs(eventTime(a) - today) - Math.abs(eventTime(b) - today),
     farthest_date: (a, b) => Math.abs(eventTime(b) - today) - Math.abs(eventTime(a) - today),
@@ -1411,6 +1419,7 @@ function checklistDueDateFields(event = {}) {
 
 async function eventForm(event = {}) {
   const speakers = await api('/api/speakers');
+  const requestKey = event.request_key || crypto.randomUUID();
   const selectedSpeakerIds = event.id
     ? (event.speakers || []).map(speaker => speaker.id)
     : queuedSpeakers().map(speaker => speaker.id);
@@ -1435,6 +1444,7 @@ async function eventForm(event = {}) {
     const formData = new FormData(submitEvent.target);
     const body = Object.fromEntries(formData);
     body.speaker_ids = formData.getAll('speaker_ids');
+    if (!event.id) body.request_key = requestKey;
     body.checklist_due_dates = {};
     $$('[data-due-label]').forEach(input => {
       body.checklist_due_dates[input.dataset.dueLabel] = input.value;

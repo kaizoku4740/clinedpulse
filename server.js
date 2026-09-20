@@ -71,7 +71,7 @@ const speakerSorts = {
   newest: 'created_at DESC, id DESC'
 };
 const eventSorts = {
-  date_desc: 'event_date DESC, event_time DESC, events.id DESC',
+  date_desc: "CASE WHEN event_date = '' THEN 0 ELSE 1 END ASC, event_date DESC, event_time DESC, events.id DESC",
   date_asc: 'event_date ASC, event_time ASC, events.id ASC',
   closest_date: "ABS(julianday(event_date) - julianday('now')) ASC, event_date ASC, event_time ASC, events.id ASC",
   farthest_date: "ABS(julianday(event_date) - julianday('now')) DESC, event_date DESC, event_time DESC, events.id DESC",
@@ -384,6 +384,20 @@ function eventFields(body, hub) {
 
 function eventInsertFields(body, hub) {
   return eventFields(body, hub);
+}
+
+function eventRequestKey(body) {
+  const key = String(body.request_key || '').trim();
+  if (key && !/^[A-Za-z0-9_-]{8,96}$/.test(key)) {
+    throw Object.assign(new Error('Invalid event request key'), { status: 400 });
+  }
+  return key;
+}
+
+function eventByRequestKey(hub, requestKey) {
+  if (!requestKey) return null;
+  const existing = db.prepare('SELECT id FROM events WHERE hub_key = ? AND request_key = ?').get(hub, requestKey);
+  return existing ? getEvent(existing.id) : null;
 }
 
 const eventSelect = `SELECT events.*, COALESCE((
@@ -817,11 +831,21 @@ async function api(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/events') {
     const body = await parseBody(req);
+    const requestKey = eventRequestKey(body);
+    const existing = eventByRequestKey(hub, requestKey);
+    if (existing) return json(res, 200, withChecklist(existing));
     const { values, speakers } = eventInsertFields(body, hub);
     ensureEventIsUnique(values);
-    const result = db.prepare(`INSERT INTO events
-      (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(...values, hub);
+    let result;
+    try {
+      result = db.prepare(`INSERT INTO events
+        (event_name,event_type,speaker_id,speaker_name,event_date,event_time,topic,zoom_link,status,hub_key,request_key)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(...values, hub, requestKey);
+    } catch (error) {
+      const retried = eventByRequestKey(hub, requestKey);
+      if (retried) return json(res, 200, withChecklist(retried));
+      throw error;
+    }
     syncEventSpeakers(result.lastInsertRowid, speakers);
     createEventChecklist(result.lastInsertRowid, checklistDueDates(body));
     applyStatusChecklist(result.lastInsertRowid, values[8]);

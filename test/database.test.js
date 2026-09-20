@@ -70,6 +70,20 @@ test('events can link multiple speakers', () => {
   assert.deepEqual(speakers.map(speaker => speaker.name), ['First Faculty', 'Second Faculty']);
 });
 
+test('event request keys make retries idempotent within a workspace', () => {
+  const insert = db.prepare(`INSERT INTO events
+    (event_name,event_type,event_date,status,hub_key,request_key)
+    VALUES (?,?,?,?,?,?)`);
+  insert.run('Idempotent Event', '', '', 'Planning', 'heme', 'request-key-1234');
+  assert.throws(
+    () => insert.run('Duplicate Retry', '', '', 'Planning', 'heme', 'request-key-1234'),
+    /UNIQUE constraint failed/
+  );
+  assert.doesNotThrow(
+    () => insert.run('Other Workspace Event', '', '', 'Planning', 'endo', 'request-key-1234')
+  );
+});
+
 test('speaker history can be derived from linked events', () => {
   const speaker = db.prepare('INSERT INTO speakers (name,email) VALUES (?,?)').run('History Speaker', 'history-speaker@example.com');
   const insertEvent = db.prepare(`INSERT INTO events

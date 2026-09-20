@@ -1427,7 +1427,7 @@ async function eventForm(event = {}) {
       ${field('zoom_link', 'Zoom link', event.zoom_link, false, 'url', true, 'https://...')}
       ${checklistDueDateFields(event)}
     </div>
-    <div class="modal-actions"><button class="button" id="cancelEventForm" type="button">Cancel</button><button class="button primary" type="submit">Save event</button></div>`;
+    <div class="modal-actions"><button class="button" id="cancelEventForm" type="button">Cancel</button><button class="button primary" id="saveEvent" type="submit">Save event</button></div>`;
   modal.showModal();
   $('#cancelEventForm').onclick = () => modal.close();
   $('#modalForm').onsubmit = async submitEvent => {
@@ -1440,6 +1440,9 @@ async function eventForm(event = {}) {
       body.checklist_due_dates[input.dataset.dueLabel] = input.value;
       delete body[input.name];
     });
+    const saveButton = $('#saveEvent');
+    saveButton.disabled = true;
+    saveButton.textContent = 'Saving...';
     try {
       await api(event.id ? `/api/events/${event.id}` : '/api/events', {
         method: event.id ? 'PUT' : 'POST', body: JSON.stringify(body)
@@ -1448,7 +1451,13 @@ async function eventForm(event = {}) {
       if (!event.id) clearSpeakerQueue();
       toast(`Event ${event.id ? 'updated' : 'added'}`);
       location.hash.startsWith('#events') ? eventsDashboard() : overview();
-    } catch (error) { toast(error.message); }
+    } catch (error) {
+      saveButton.disabled = false;
+      saveButton.textContent = 'Save event';
+      toast(error.message.includes('Could not reach')
+        ? 'Connection interrupted. Your event is still here—try Save again.'
+        : error.message);
+    }
   };
 }
 

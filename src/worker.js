@@ -405,29 +405,30 @@ function checklistDueDates(body) {
 }
 
 async function createEventChecklist(env, eventId, dueDates = {}) {
-  for (const [index, item] of checklistItems.entries()) {
-    await env.DB.prepare('INSERT OR IGNORE INTO event_checklist_items (event_id,label,position,due_date) VALUES (?,?,?,?)')
-      .bind(eventId, item, index + 1, dueDates[item] || null).run();
-  }
+  const statements = checklistItems.map((item, index) => env.DB
+    .prepare('INSERT OR IGNORE INTO event_checklist_items (event_id,label,position,due_date) VALUES (?,?,?,?)')
+    .bind(eventId, item, index + 1, dueDates[item] || null));
+  await env.DB.batch(statements);
 }
 
 async function updateChecklistDueDates(env, eventId, dueDates = {}) {
-  for (const [label, dueDate] of Object.entries(dueDates)) {
-    if (!checklistItems.includes(label)) continue;
-    await env.DB.prepare('UPDATE event_checklist_items SET due_date=?,updated_at=CURRENT_TIMESTAMP WHERE event_id=? AND label=?')
-      .bind(dueDate || null, eventId, label).run();
-  }
+  const statements = Object.entries(dueDates)
+    .filter(([label]) => checklistItems.includes(label))
+    .map(([label, dueDate]) => env.DB
+      .prepare('UPDATE event_checklist_items SET due_date=?,updated_at=CURRENT_TIMESTAMP WHERE event_id=? AND label=?')
+      .bind(dueDate || null, eventId, label));
+  if (statements.length) await env.DB.batch(statements);
 }
 
 async function applyStatusChecklist(env, eventId, status) {
   const labels = statusChecklistMap[status] || [];
-  for (const label of labels) {
-    await env.DB.prepare(`UPDATE event_checklist_items SET
-      completed=1,
-      completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP),
-      updated_at=CURRENT_TIMESTAMP
-      WHERE event_id=? AND label=? AND completed=0`).bind(eventId, label).run();
-  }
+  if (!labels.length) return;
+  const placeholders = labels.map(() => '?').join(',');
+  await env.DB.prepare(`UPDATE event_checklist_items SET
+    completed=1,
+    completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP),
+    updated_at=CURRENT_TIMESTAMP
+    WHERE event_id=? AND label IN (${placeholders}) AND completed=0`).bind(eventId, ...labels).run();
 }
 
 async function overviewTasks(env, hub) {

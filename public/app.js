@@ -421,7 +421,7 @@ function eventRow(event) {
   const pendingState = event.pending_sync
     ? `<span class="pill ${event.sync_error ? 'red' : 'amber'}" title="${escapeHtml(event.sync_error)}">${event.sync_error ? 'Needs attention' : 'Syncing'}</span>`
     : statusSelect(event);
-  return `<tr ${event.pending_sync ? 'data-pending-event' : `data-event-id="${event.id}"`}>
+  return `<tr ${event.pending_sync ? `data-pending-event="${escapeHtml(event.request_key)}"` : `data-event-id="${event.id}"`}>
     <td><b>${escapeHtml(event.event_name)}</b><small>${escapeHtml(event.event_type)}${event.pending_sync ? ' · Saved on this device' : ''}</small></td>
     <td>${escapeHtml(event.speaker || event.speaker_name || '—')}</td>
     <td>${formatEventDate(event.event_date)}${event.event_time ? `<small>${escapeHtml(event.event_time)}</small>` : ''}</td>
@@ -977,6 +977,9 @@ function wireSpeakerDropTarget() {
 function wireEventRows() {
   $$('[data-event-id]').forEach(row => {
     row.onclick = () => showEvent(row.dataset.eventId);
+  });
+  $$('[data-pending-event]').forEach(row => {
+    row.onclick = () => showPendingEvent(row.dataset.pendingEvent);
   });
 }
 
@@ -1651,6 +1654,54 @@ async function showEvent(id) {
       toast('Event deleted');
       eventsDashboard();
     } catch (error) { toast(error.message); }
+  };
+}
+
+function pendingChecklistView(record) {
+  const dueDates = record.body?.checklist_due_dates || {};
+  return `<div class="checklist">${checklistDueLabels.map(label => `
+    <label class="check">
+      <input type="checkbox" disabled>
+      <span>${escapeHtml(label)}</span>
+      <small>${taskDueText(dueDates[label])}</small>
+    </label>`).join('')}</div>`;
+}
+
+async function showPendingEvent(requestKey) {
+  const record = pendingEvents().find(item => item.body?.request_key === requestKey);
+  if (!record) {
+    try {
+      const receipt = await api(`/api/events/request/${encodeURIComponent(requestKey)}`);
+      await showEvent(receipt.id);
+    } catch {
+      toast('This event is still syncing. Try opening it again in a moment.');
+    }
+    return;
+  }
+  const event = pendingEventRow(record);
+  const syncLabel = record.sync_error ? 'Needs attention' : 'Syncing with ClinEdPulse';
+  $('#modalBody').innerHTML = `
+    <div class="event-modal">
+    <div class="profile-card"><span class="avatar">◷</span><h2>${escapeHtml(event.event_name)}</h2><p>${escapeHtml(event.event_type || 'Event type not recorded')} · ${escapeHtml(syncLabel)}</p><span class="pill ${record.sync_error ? 'red' : 'amber'}">${escapeHtml(syncLabel)}</span></div>
+    <div class="detail-body"><h3>Speakers</h3><p>${escapeHtml(event.speaker || 'No speakers recorded')}</p></div>
+    <div class="detail-body"><h3>Date and time</h3><p>${formatEventDate(event.event_date)}${event.event_time ? ` at ${escapeHtml(event.event_time)}` : ''}</p></div>
+    <div class="detail-body"><h3>Status</h3><p>${escapeHtml(event.status)}</p></div>
+    <div class="detail-body"><h3>Topic</h3><p>${escapeHtml(event.topic || 'No topic recorded.')}</p></div>
+    <div class="detail-body"><h3>Zoom link</h3><p>${event.zoom_link ? `<a href="${escapeHtml(event.zoom_link)}" target="_blank" rel="noreferrer">Open Zoom link ↗</a>` : 'No Zoom link recorded.'}</p></div>
+    <div class="detail-body"><h3>Operations checklist</h3>${pendingChecklistView(record)}</div>
+    ${record.sync_error ? `<div class="detail-body"><h3>Sync issue</h3><p>${escapeHtml(record.sync_error)}</p></div>` : ''}
+    </div>
+    <div class="modal-actions"><button class="button" type="button" id="syncPendingEvent">Sync now</button><button class="button primary" type="button" id="closePendingEvent">Done</button></div>`;
+  if (!modal.open) modal.showModal();
+  $('#closePendingEvent').onclick = () => modal.close();
+  $('#syncPendingEvent').onclick = () => {
+    const records = pendingEvents();
+    const pending = records.find(item => item.body?.request_key === requestKey);
+    if (pending) pending.sync_error = '';
+    writePendingEvents(records);
+    modal.close();
+    toast('Syncing event');
+    void syncPendingEvents();
   };
 }
 

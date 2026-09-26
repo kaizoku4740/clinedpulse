@@ -71,3 +71,4 @@ html,body,.sidebar,.button,.metric,.card,.table-card,.quick-card,.hub-option{tra
 
 @media(max-width:760px){.email-review-card{grid-template-columns:44px minmax(0,1fr)}.email-review-card .review-actions{grid-column:2;justify-content:flex-start;flex-wrap:wrap}}
 @media(max-width:650px){.speaker-picker{grid-template-columns:1fr}.speaker-queue{align-items:flex-start;flex-direction:column}}
+.events-table tr[data-pending-event]{cursor:pointer}.events-table tr[data-pending-event]:hover{background:#fafcfb}

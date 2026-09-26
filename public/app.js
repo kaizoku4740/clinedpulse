@@ -205,124 +205,6 @@ async function api(path, options = {}) {
   return data;
 }
 
-const pendingEventsStorageKey = 'clinedpulse-pending-events-v1';
-let pendingEventSyncActive = false;
-let pendingEventSyncTimer = null;
-
-function pendingEvents() {
-  try {
-    const records = JSON.parse(localStorage.getItem(pendingEventsStorageKey) || '[]');
-    return Array.isArray(records) ? records : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePendingEvents(records) {
-  if (records.length) localStorage.setItem(pendingEventsStorageKey, JSON.stringify(records));
-  else localStorage.removeItem(pendingEventsStorageKey);
-}
-
-function queuePendingEvent(body, speakerNames = []) {
-  const records = pendingEvents().filter(record => record.body?.request_key !== body.request_key);
-  records.push({
-    hub: activeHub,
-    mode: activeDataMode,
-    body,
-    speaker_names: speakerNames,
-    created_at: new Date().toISOString(),
-    sync_error: ''
-  });
-  writePendingEvents(records);
-}
-
-function pendingEventRow(record) {
-  const body = record.body || {};
-  return {
-    ...body,
-    id: `pending-${body.request_key}`,
-    speaker: (record.speaker_names || []).join(', '),
-    speaker_name: (record.speaker_names || []).join(', '),
-    status: body.status || 'Planning',
-    checklist_done: 0,
-    checklist_total: 12,
-    readiness_score: 0,
-    pending_sync: true,
-    sync_error: record.sync_error || ''
-  };
-}
-
-function mergePendingEvents(events, filters) {
-  const remoteKeys = new Set(events.map(event => event.request_key).filter(Boolean));
-  const records = pendingEvents();
-  const remaining = records.filter(record => !remoteKeys.has(record.body?.request_key));
-  if (remaining.length !== records.length) writePendingEvents(remaining);
-  const local = remaining
-    .filter(record => record.hub === activeHub && record.mode === activeDataMode)
-    .map(pendingEventRow);
-  return [...filterEmbeddedEvents(local, filters), ...events];
-}
-
-async function pendingEventReceipt(record) {
-  try {
-    const response = await fetch(scopedApiPath(
-      `/api/events/request/${encodeURIComponent(record.body.request_key)}`,
-      record.hub,
-      record.mode
-    ), { cache: 'no-store' });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function sendPendingEvent(record) {
-  try {
-    const response = await fetch(scopedApiPath('/api/events', record.hub, record.mode), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...record.body, hub_key: record.hub }),
-      cache: 'no-store',
-      keepalive: true
-    });
-    if (response.ok) return { synced: true };
-    const data = await response.json().catch(() => ({}));
-    if (response.status < 500) return { synced: false, permanent: true, error: data.error || `Save failed (${response.status})` };
-  } catch {}
-  return await pendingEventReceipt(record) ? { synced: true } : { synced: false, permanent: false };
-}
-
-function schedulePendingEventSync(delay = 8000) {
-  clearTimeout(pendingEventSyncTimer);
-  if (!pendingEvents().some(record => !record.sync_error)) return;
-  pendingEventSyncTimer = setTimeout(() => { void syncPendingEvents(); }, delay);
-}
-
-async function syncPendingEvents() {
-  if (pendingEventSyncActive) return;
-  pendingEventSyncActive = true;
-  let records = pendingEvents();
-  let changed = false;
-  let shouldRetry = false;
-  for (const record of [...records]) {
-    if (record.sync_error) continue;
-    const result = await sendPendingEvent(record);
-    if (result.synced) {
-      records = records.filter(item => item.body?.request_key !== record.body?.request_key);
-      changed = true;
-    } else if (result.permanent) {
-      const current = records.find(item => item.body?.request_key === record.body?.request_key);
-      if (current) current.sync_error = result.error;
-      changed = true;
-    } else {
-      shouldRetry = true;
-    }
-  }
-  writePendingEvents(records);
-  pendingEventSyncActive = false;
-  if (changed && location.hash.startsWith('#events')) await eventsDashboard();
-  if (shouldRetry) schedulePendingEventSync();
-}
 
 function toast(message) {
   const element = $('#toast');
@@ -383,16 +265,16 @@ async function loadEvents(path, filters) {
   try {
     const events = await api(path);
     localStorage.setItem(cacheKey, JSON.stringify(events));
-    return mergePendingEvents(events, filters);
+    return events;
   } catch {
     try {
       const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
-      if (Array.isArray(cached)) return mergePendingEvents(cached, filters);
+      if (Array.isArray(cached)) return cached;
     } catch {}
     if (activeDataMode === 'test') {
-      return mergePendingEvents(filterEmbeddedEvents(embeddedTestEvents(), filters), filters);
+      return filterEmbeddedEvents(embeddedTestEvents(), filters);
     }
-    return mergePendingEvents([], filters);
+    return [];
   }
 }
 
@@ -418,14 +300,11 @@ function statusSelect(event, compact = true) {
 
 function eventRow(event) {
   const score = Number(event.readiness_score || 0);
-  const pendingState = event.pending_sync
-    ? `<span class="pill ${event.sync_error ? 'red' : 'amber'}" title="${escapeHtml(event.sync_error)}">${event.sync_error ? 'Needs attention' : 'Syncing'}</span>`
-    : statusSelect(event);
-  return `<tr ${event.pending_sync ? `data-pending-event="${escapeHtml(event.request_key)}"` : `data-event-id="${event.id}"`}>
-    <td><b>${escapeHtml(event.event_name)}</b><small>${escapeHtml(event.event_type)}${event.pending_sync ? ' · Saved on this device' : ''}</small></td>
+  return `<tr data-event-id="${event.id}">
+    <td><b>${escapeHtml(event.event_name)}</b><small>${escapeHtml(event.event_type)}</small></td>
     <td>${escapeHtml(event.speaker || event.speaker_name || '—')}</td>
     <td>${formatEventDate(event.event_date)}${event.event_time ? `<small>${escapeHtml(event.event_time)}</small>` : ''}</td>
-    <td>${pendingState}</td>
+    <td>${statusSelect(event)}</td>
     <td data-readiness-event-id="${event.id}">${readiness(score, Number(event.checklist_done || 0), Number(event.checklist_total || 0))}</td>
   </tr>`;
 }
@@ -977,9 +856,6 @@ function wireSpeakerDropTarget() {
 function wireEventRows() {
   $$('[data-event-id]').forEach(row => {
     row.onclick = () => showEvent(row.dataset.eventId);
-  });
-  $$('[data-pending-event]').forEach(row => {
-    row.onclick = () => showPendingEvent(row.dataset.pendingEvent);
   });
 }
 
@@ -1576,23 +1452,17 @@ async function eventForm(event = {}) {
       toast(`Event ${event.id ? 'updated' : 'added'}`);
       location.hash.startsWith('#events') ? eventsDashboard() : overview();
     };
-    if (!event.id) {
-      const selected = new Set(body.speaker_ids.map(String));
-      queuePendingEvent(body, speakers.filter(speaker => selected.has(String(speaker.id))).map(speaker => speaker.name));
-      finishSave();
-      void syncPendingEvents();
-      return;
-    }
     try {
-      await api(`/api/events/${event.id}`, {
-        method: 'PUT', body: JSON.stringify(body)
+      await api(event.id ? `/api/events/${event.id}` : '/api/events', {
+        method: event.id ? 'PUT' : 'POST',
+        body: JSON.stringify(body)
       });
       finishSave();
     } catch (error) {
       saveButton.disabled = false;
       saveButton.textContent = 'Save event';
       toast(error.message.includes('Could not reach')
-        ? 'Connection interrupted. Your event is still here—try Save again.'
+        ? 'Connection interrupted. Check your connection and try Save again.'
         : error.message);
     }
   };
@@ -1657,53 +1527,6 @@ async function showEvent(id) {
   };
 }
 
-function pendingChecklistView(record) {
-  const dueDates = record.body?.checklist_due_dates || {};
-  return `<div class="checklist">${checklistDueLabels.map(label => `
-    <label class="check">
-      <input type="checkbox" disabled>
-      <span>${escapeHtml(label)}</span>
-      <small>${taskDueText(dueDates[label])}</small>
-    </label>`).join('')}</div>`;
-}
-
-async function showPendingEvent(requestKey) {
-  const record = pendingEvents().find(item => item.body?.request_key === requestKey);
-  if (!record) {
-    try {
-      const receipt = await api(`/api/events/request/${encodeURIComponent(requestKey)}`);
-      await showEvent(receipt.id);
-    } catch {
-      toast('This event is still syncing. Try opening it again in a moment.');
-    }
-    return;
-  }
-  const event = pendingEventRow(record);
-  const syncLabel = record.sync_error ? 'Needs attention' : 'Syncing with ClinEdPulse';
-  $('#modalBody').innerHTML = `
-    <div class="event-modal">
-    <div class="profile-card"><span class="avatar">◷</span><h2>${escapeHtml(event.event_name)}</h2><p>${escapeHtml(event.event_type || 'Event type not recorded')} · ${escapeHtml(syncLabel)}</p><span class="pill ${record.sync_error ? 'red' : 'amber'}">${escapeHtml(syncLabel)}</span></div>
-    <div class="detail-body"><h3>Speakers</h3><p>${escapeHtml(event.speaker || 'No speakers recorded')}</p></div>
-    <div class="detail-body"><h3>Date and time</h3><p>${formatEventDate(event.event_date)}${event.event_time ? ` at ${escapeHtml(event.event_time)}` : ''}</p></div>
-    <div class="detail-body"><h3>Status</h3><p>${escapeHtml(event.status)}</p></div>
-    <div class="detail-body"><h3>Topic</h3><p>${escapeHtml(event.topic || 'No topic recorded.')}</p></div>
-    <div class="detail-body"><h3>Zoom link</h3><p>${event.zoom_link ? `<a href="${escapeHtml(event.zoom_link)}" target="_blank" rel="noreferrer">Open Zoom link ↗</a>` : 'No Zoom link recorded.'}</p></div>
-    <div class="detail-body"><h3>Operations checklist</h3>${pendingChecklistView(record)}</div>
-    ${record.sync_error ? `<div class="detail-body"><h3>Sync issue</h3><p>${escapeHtml(record.sync_error)}</p></div>` : ''}
-    </div>
-    <div class="modal-actions"><button class="button" type="button" id="syncPendingEvent">Sync now</button><button class="button primary" type="button" id="closePendingEvent">Done</button></div>`;
-  if (!modal.open) modal.showModal();
-  $('#closePendingEvent').onclick = () => modal.close();
-  $('#syncPendingEvent').onclick = () => {
-    const records = pendingEvents();
-    const pending = records.find(item => item.body?.request_key === requestKey);
-    if (pending) pending.sync_error = '';
-    writePendingEvents(records);
-    modal.close();
-    toast('Syncing event');
-    void syncPendingEvents();
-  };
-}
 
 async function showSpeaker(id) {
   const speaker = await api(`/api/speakers/${id}`);
@@ -1796,10 +1619,9 @@ $('#testModeToggle').addEventListener('click', () => {
 $('#modalClose').onclick = () => modal.close();
 wireSpeakerDropTarget();
 updateSpeakerQueueBadge();
-window.addEventListener('online', () => { void syncPendingEvents(); });
+localStorage.removeItem('clinedpulse-pending-events-v1');
 document.addEventListener('click', event => {
   if (event.target.matches('[data-action="new-speaker"]')) speakerForm();
 });
 window.addEventListener('hashchange', router);
 router();
-void syncPendingEvents();

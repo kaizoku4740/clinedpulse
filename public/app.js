@@ -190,8 +190,11 @@ async function api(path, options = {}) {
       body,
       cache: method === 'GET' ? 'no-store' : options.cache
     });
-  } catch {
-    throw new Error('Could not reach ClinEdPulse. Check your connection and try again.');
+  } catch (error) {
+    const connectionError = new Error('Could not reach ClinEdPulse. Check your connection and try again.');
+    connectionError.code = 'NETWORK_ERROR';
+    connectionError.cause = error;
+    throw connectionError;
   }
   let data;
   try {
@@ -201,8 +204,42 @@ async function api(path, options = {}) {
       ? 'ClinEdPulse returned an unreadable response. Please try again.'
       : `ClinEdPulse request failed (${response.status}).`);
   }
-  if (!response.ok) throw new Error(data.error || 'Something went wrong');
+  if (!response.ok) {
+    const requestError = new Error(data.error || 'Something went wrong');
+    requestError.status = response.status;
+    throw requestError;
+  }
   return data;
+}
+
+async function persistEvent(event, body) {
+  const path = event.id ? '/api/events/' + event.id : '/api/events';
+  const options = {
+    method: event.id ? 'PUT' : 'POST',
+    body: JSON.stringify(body)
+  };
+  if (event.id) return api(path, options);
+
+  let lastError;
+  for (const delay of [0, 500, 1500]) {
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    try {
+      return await api(path, options);
+    } catch (error) {
+      lastError = error;
+      const retryable = error.code === 'NETWORK_ERROR' || Number(error.status) >= 500;
+      if (!retryable) throw error;
+      try {
+        return await api('/api/events/request/' + encodeURIComponent(body.request_key));
+      } catch (receiptError) {
+        const receiptRetryable = receiptError.code === 'NETWORK_ERROR'
+          || receiptError.status === 404
+          || Number(receiptError.status) >= 500;
+        if (!receiptRetryable) throw receiptError;
+      }
+    }
+  }
+  throw lastError;
 }
 
 
@@ -1453,10 +1490,7 @@ async function eventForm(event = {}) {
       location.hash.startsWith('#events') ? eventsDashboard() : overview();
     };
     try {
-      await api(event.id ? `/api/events/${event.id}` : '/api/events', {
-        method: event.id ? 'PUT' : 'POST',
-        body: JSON.stringify(body)
-      });
+      await persistEvent(event, body);
       finishSave();
     } catch (error) {
       saveButton.disabled = false;

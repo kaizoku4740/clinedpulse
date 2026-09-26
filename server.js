@@ -697,6 +697,10 @@ function reviewEmailMaterial(id, hub, action, requestedEventId) {
 }
 
 async function api(req, res, url) {
+  if (url.pathname === '/api/programs' || url.pathname.startsWith('/api/programs/')) {
+    url = new URL(url);
+    url.pathname = url.pathname.replace(/^\/api\/programs/, '/api/events');
+  }
   const selectedHub = hubKey(url.searchParams.get('hub'));
   const mode = url.searchParams.get('mode') === 'test' ? 'test' : 'live';
   const hub = storageHubKey(selectedHub, mode);

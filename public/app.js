@@ -213,7 +213,7 @@ async function api(path, options = {}) {
 }
 
 async function persistEvent(event, body) {
-  const path = event.id ? '/api/events/' + event.id : '/api/events';
+  const path = event.id ? '/api/programs/' + event.id : '/api/programs';
   const options = {
     method: event.id ? 'PUT' : 'POST',
     body: JSON.stringify(body)
@@ -230,7 +230,7 @@ async function persistEvent(event, body) {
       const retryable = error.code === 'NETWORK_ERROR' || Number(error.status) >= 500;
       if (!retryable) throw error;
       try {
-        return await api('/api/events/request/' + encodeURIComponent(body.request_key));
+        return await api('/api/programs/request/' + encodeURIComponent(body.request_key));
       } catch (receiptError) {
         const receiptRetryable = receiptError.code === 'NETWORK_ERROR'
           || receiptError.status === 404
@@ -897,8 +897,8 @@ function wireEventRows() {
 }
 
 async function updateEventStatus(event, status, options = {}) {
-  const current = Array.isArray(event.speakers) ? event : await api(`/api/events/${event.id}`);
-  const updated = await api(`/api/events/${event.id}`, {
+  const current = Array.isArray(event.speakers) ? event : await api(`/api/programs/${event.id}`);
+  const updated = await api(`/api/programs/${event.id}`, {
     method: 'PUT',
     body: JSON.stringify({
       ...current,
@@ -1113,7 +1113,7 @@ async function eventsDashboard() {
   if (type) query.set('type', type);
   if (status) query.set('status', status);
   query.set('sort', sort);
-  const eventPath = `/api/events${query.toString() ? `?${query}` : ''}`;
+  const eventPath = `/api/programs${query.toString() ? `?${query}` : ''}`;
   const events = await loadEvents(eventPath, { month, type, status, sort });
   const rows = events.map(eventRow).join('');
   const queued = queuedSpeakers();
@@ -1412,7 +1412,7 @@ async function runEventImport() {
   $('#runEventImport').disabled = true;
   $('#runEventImport').textContent = 'Importing...';
   try {
-    const result = await api('/api/events/import', { method: 'POST', body: JSON.stringify({ events: rows }) });
+    const result = await api('/api/programs/import', { method: 'POST', body: JSON.stringify({ events: rows }) });
     toast(`Import finished: ${result.added} added, ${result.skipped} skipped, ${result.failed} failed`);
     eventImportRows = [];
     modal.close();
@@ -1503,7 +1503,7 @@ async function eventForm(event = {}) {
 }
 
 async function showEvent(id) {
-  const event = await api(`/api/events/${id}`);
+  const event = await api(`/api/programs/${id}`);
   const total = Number(event.checklist_total || event.checklist?.length || 0);
   const done = Number(event.checklist_done || event.checklist?.filter(item => item.completed).length || 0);
   const score = Number(event.readiness_score || 0);
@@ -1535,7 +1535,7 @@ async function showEvent(id) {
       applyState(input.checked);
       input.disabled = true;
       try {
-        const updated = await api(`/api/events/${event.id}/checklist/${input.dataset.checklistId}`, {
+        const updated = await api(`/api/programs/${event.id}/checklist/${input.dataset.checklistId}`, {
           method: 'PUT',
           body: JSON.stringify({ completed: input.checked })
         });
@@ -1553,7 +1553,7 @@ async function showEvent(id) {
   $('#deleteEvent').onclick = async () => {
     if (!confirm(`Delete ${event.event_name}? This cannot be undone.`)) return;
     try {
-      await api(`/api/events/${event.id}`, { method: 'DELETE' });
+      await api(`/api/programs/${event.id}`, { method: 'DELETE' });
       modal.close();
       toast('Event deleted');
       eventsDashboard();

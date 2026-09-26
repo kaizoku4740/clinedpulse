@@ -1047,7 +1047,13 @@ export default {
     const url = new URL(request.url);
 
     try {
-      if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
+      if (url.pathname.startsWith('/api/')) {
+        const apiUrl = new URL(url);
+        if (apiUrl.pathname === '/api/programs' || apiUrl.pathname.startsWith('/api/programs/')) {
+          apiUrl.pathname = apiUrl.pathname.replace(/^\/api\/programs/, '/api/events');
+        }
+        return await handleApi(request, env, apiUrl);
+      }
       return env.ASSETS.fetch(request);
     } catch (error) {
       console.error(JSON.stringify({
